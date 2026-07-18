@@ -273,6 +273,19 @@ export function moveClip(clips, clipId, start, track = null) {
   } : clip);
 }
 
+export function nudgeClip(clips, clipId, delta) {
+  const selected = clips.find((clip) => clip.id === clipId);
+  if (!selected) return clips;
+  return moveClip(clips, clipId, selected.start + delta);
+}
+
+export function stepPlayhead(current, direction, duration, frameRate = 30, largeStep = false) {
+  const safeDuration = Math.max(0, Number(duration) || 0);
+  const safeFrameRate = Math.max(1, Number(frameRate) || 30);
+  const amount = largeStep ? 1 : 1 / safeFrameRate;
+  return Math.min(safeDuration, Math.max(0, roundTime((Number(current) || 0) + Math.sign(direction) * amount)));
+}
+
 export function removeClip(clips, clipId) {
   return clips.filter((clip) => clip.id !== clipId);
 }
@@ -303,6 +316,16 @@ export function duplicateClip(clips, clipId) {
     Object.entries(source.effects?.primaryWheels || defaultPrimaryWheels()).map(([key, value]) => [key, { ...value }]),
   );
   return [...clips.slice(0, index + 1), duplicate, ...clips.slice(index + 1)];
+}
+
+export function pasteClipAt(source, start) {
+  if (!source) return null;
+  const pasted = structuredClone(source);
+  return {
+    ...pasted,
+    id: makeId(),
+    start: Math.max(0, roundTime(start)),
+  };
 }
 
 export function setClipSpeed(clip, requestedSpeed) {
@@ -354,4 +377,11 @@ export function snapTimelineTime(value, clips, pixelsPerSecond, excludedClipId =
     Math.abs(candidate - safeValue) < Math.abs(best - safeValue) ? candidate : best
   ), candidates[0]);
   return Math.abs(nearest - safeValue) * pixelsPerSecond <= 6 ? nearest : safeValue;
+}
+
+export function timelineZoomForDuration(duration, viewportWidth, gutterWidth = 84) {
+  const timelineDuration = Math.max(30, Math.ceil(Math.max(0, Number(duration) || 0) + 8));
+  const availableWidth = Math.max(1, (Number(viewportWidth) || 0) - gutterWidth - 24);
+  const zoom = availableWidth / (timelineDuration * 64);
+  return Math.min(2, Math.max(0.15, Math.round(zoom * 1000) / 1000));
 }

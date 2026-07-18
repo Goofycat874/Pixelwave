@@ -5,6 +5,7 @@ import {
   CaretDown,
   DownloadSimple,
   FolderOpen,
+  Keyboard,
   Microphone,
   Pause,
   Play,
@@ -22,6 +23,8 @@ import Timeline from './components/Timeline.jsx';
 import EmptyState from './components/EmptyState.jsx';
 import IconButton from './components/IconButton.jsx';
 import VoiceRecorder from './components/VoiceRecorder.jsx';
+import ActionToast from './components/ActionToast.jsx';
+import ShortcutGuide from './components/ShortcutGuide.jsx';
 import {
   activeClipsAt,
   appendClip,
@@ -31,10 +34,13 @@ import {
   defaultEffects,
   duplicateClip,
   getProjectDuration,
+  nudgeClip,
+  pasteClipAt,
   removeClip,
   removeMediaFromProject,
   serializeProject,
   setClipSpeed,
+  stepPlayhead,
   splitClip,
   updateClipTextOverlay,
 } from './lib/editor.js';
@@ -73,7 +79,10 @@ export default function App() {
   const [textEditingClipId, setTextEditingClipId] = useState(null);
   const [textEditingTextId, setTextEditingTextId] = useState(null);
   const [selectedTextId, setSelectedTextId] = useState(null);
+  const [shortcutGuideOpen, setShortcutGuideOpen] = useState(false);
+  const [notice, setNotice] = useState(null);
   const history = useRef({ past: [], future: [] });
+  const clipClipboard = useRef(null);
   const cancelExport = useRef(null);
   const duration = useMemo(() => getProjectDuration(project.clips), [project.clips]);
   const selectedClip = project.clips.find((clip) => clip.id === selectedClipId) || null;
@@ -83,6 +92,12 @@ export default function App() {
   const selectedText = selectedClip
     ? clipTextOverlays(selectedClip).find((text) => text.id === selectedTextId) || null
     : null;
+
+  const showNotice = useCallback((message, options = {}) => {
+    setNotice({ id: Date.now(), message, ...options });
+  }, []);
+
+  const closeNotice = useCallback(() => setNotice(null), []);
 
   const clearTextState = useCallback(() => {
     setSelectedTextId(null);
@@ -160,14 +175,19 @@ export default function App() {
       const results = await Promise.allSettled(fresh.map(prepareImportedMedia));
       const ready = results.filter((result) => result.status === 'fulfilled').map((result) => result.value);
       const failed = results.filter((result) => result.status === 'rejected').length;
-      if (ready.length) changeProject((current) => ({ ...current, media: [...current.media, ...ready] }));
+      if (ready.length) {
+        changeProject((current) => ({ ...current, media: [...current.media, ...ready] }));
+        showNotice(`${ready.length} ${ready.length === 1 ? 'asset' : 'assets'} imported`);
+      } else if (!failed && fresh.length === 0) {
+        showNotice('Those files are already in this project');
+      }
       if (failed) setError(`${failed} ${failed === 1 ? 'file was' : 'files were'} skipped because neither the original nor an optimized proxy could be decoded.`);
     } catch (importError) {
       setError(importError.message || 'The media import could not be completed.');
     } finally {
       setImporting(false);
     }
-  }, [changeProject, project.media]);
+  }, [changeProject, project.media, showNotice]);
 
   const addToTimeline = useCallback((assetId, start = null, track = 0) => {
     const asset = project.media.find((item) => item.id === assetId);
@@ -183,13 +203,20 @@ export default function App() {
   }, [changeProject, clearTextState, duration, project.media]);
 
   const removeMedia = useCallback((assetId) => {
+    const asset = project.media.find((item) => item.id === assetId);
+    const linkedClips = project.clips.filter((clip) => clip.assetId === assetId).length;
     const removesSelection = project.clips.some((clip) => clip.id === selectedClipId && clip.assetId === assetId);
     changeProject((current) => removeMediaFromProject(current, assetId));
     if (removesSelection) {
       setSelectedClipId(null);
       clearTextState();
     }
-  }, [changeProject, clearTextState, project.clips, selectedClipId]);
+    showNotice(`${asset?.name?.replace(/\.[^.]+$/, '') || 'Asset'} removed${linkedClips ? ` with ${linkedClips} timeline ${linkedClips === 1 ? 'clip' : 'clips'}` : ''}`, {
+      actionLabel: 'Undo',
+      onAction: undo,
+      duration: 5200,
+    });
+  }, [changeProject, clearTextState, project.clips, project.media, selectedClipId, showNotice, undo]);
 
   const revealMedia = useCallback((assetId) => {
     const asset = project.media.find((item) => item.id === assetId);
@@ -230,10 +257,12 @@ export default function App() {
 
   const deleteSelected = useCallback(() => {
     if (!selectedClipId) return;
+    const name = selectedClip?.name?.replace(/\.[^.]+$/, '') || 'Clip';
     changeProject((current) => ({ ...current, clips: removeClip(current.clips, selectedClipId) }));
     setSelectedClipId(null);
     clearTextState();
-  }, [changeProject, clearTextState, selectedClipId]);
+    showNotice(`${name} removed from timeline`, { actionLabel: 'Undo', onAction: undo, duration: 5200 });
+  }, [changeProject, clearTextState, selectedClip, selectedClipId, showNotice, undo]);
 
   const splitSelected = useCallback(() => {
     if (!selectedClipId) return;
@@ -254,6 +283,36 @@ export default function App() {
       setPlayhead(duplicated.start);
     }
   }, [changeProject, clearTextState, project.clips, selectedClipId]);
+
+  const copySelected = useCallback(() => {
+    if (!selectedClip) return;
+    clipClipboard.current = structuredClone(selectedClip);
+    showNotice(`${selectedClip.name.replace(/\.[^.]+$/, '')} copied`);
+  }, [selectedClip, showNotice]);
+
+  const pasteCopied = useCallback(() => {
+    const source = clipClipboard.current;
+    if (!source) {
+      showNotice('Copy a timeline clip before pasting');
+      return;
+    }
+    if (!project.media.some((asset) => asset.id === source.assetId)) {
+      showNotice('The copied clip’s media is no longer in this project');
+      return;
+    }
+    const pasted = pasteClipAt(source, playhead);
+    changeProject((current) => ({ ...current, clips: [...current.clips, pasted] }));
+    setSelectedClipId(pasted.id);
+    clearTextState();
+    setPlaying(false);
+    showNotice(`${pasted.name.replace(/\.[^.]+$/, '')} pasted at ${formatTime(playhead, true)}`);
+  }, [changeProject, clearTextState, playhead, project.media, showNotice]);
+
+  const nudgeSelected = useCallback((direction, largeStep = false) => {
+    if (!selectedClipId) return;
+    const amount = largeStep ? 1 : 1 / (project.frameRate || 30);
+    changeProject((current) => ({ ...current, clips: nudgeClip(current.clips, selectedClipId, Math.sign(direction) * amount) }));
+  }, [changeProject, project.frameRate, selectedClipId]);
 
   const updateSelectedSpeed = useCallback((speed) => {
     if (!selectedClipId) return;
@@ -332,11 +391,12 @@ export default function App() {
         setProjectPath(path);
         setDirty(false);
         setError('');
+        showNotice('Project saved');
       }
     } catch (saveError) {
       setError(saveError.message || 'The project could not be saved.');
     }
-  }, [project, projectPath]);
+  }, [project, projectPath, showNotice]);
 
   const openProject = useCallback(async () => {
     if (!window.pixelwave?.openProject) return;
@@ -415,6 +475,7 @@ export default function App() {
       const path = await window.pixelwave.finishExport(session.jobId);
       token.jobId = null;
       setExportState({ active: false, progress: 0, status: path ? 'Export complete' : '' });
+      if (path) showNotice(`${exportFormat.toUpperCase()} export complete`, { duration: 5200 });
     } catch (exportError) {
       if (token.jobId) await window.pixelwave.cancelExport(token.jobId).catch(() => {});
       setExportState({ active: false, progress: 0, status: '' });
@@ -422,7 +483,7 @@ export default function App() {
     } finally {
       cancelExport.current = null;
     }
-  }, [exportFormat, exportState.active, project]);
+  }, [exportFormat, exportState.active, project, showNotice]);
 
   useEffect(() => {
     if (!playing) return undefined;
@@ -447,21 +508,52 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      const editingText = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      const editingText = event.target instanceof HTMLInputElement
+        || event.target instanceof HTMLTextAreaElement
+        || event.target?.isContentEditable;
       const command = event.metaKey || event.ctrlKey;
       if (command && event.key.toLowerCase() === 's') { event.preventDefault(); saveProject(); }
       else if (command && event.key.toLowerCase() === 'o') { event.preventDefault(); openProject(); }
       else if (command && event.key.toLowerCase() === 'i') { event.preventDefault(); importMedia(); }
       else if (command && event.key.toLowerCase() === 'z' && event.shiftKey) { event.preventDefault(); redo(); }
       else if (command && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); }
-      else if (command && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateSelected(); }
+      else if (command && !editingText && event.key.toLowerCase() === 'c') { event.preventDefault(); copySelected(); }
+      else if (command && !editingText && event.key.toLowerCase() === 'v') { event.preventDefault(); pasteCopied(); }
+      else if (command && !editingText && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateSelected(); }
       else if (!editingText && event.code === 'Space') { event.preventDefault(); setPlaying((value) => !value); }
       else if (!editingText && (event.key === 'Backspace' || event.key === 'Delete')) { event.preventDefault(); deleteSelected(); }
       else if (!editingText && event.key.toLowerCase() === 's') splitSelected();
+      else if (!editingText && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        event.preventDefault();
+        const direction = event.key === 'ArrowLeft' ? -1 : 1;
+        if (event.altKey && selectedClipId) nudgeSelected(direction, event.shiftKey);
+        else {
+          setPlaying(false);
+          setPlayhead((current) => stepPlayhead(current, direction, duration, project.frameRate, event.shiftKey));
+        }
+      } else if (!editingText && event.key === 'Home') {
+        event.preventDefault();
+        setPlaying(false);
+        setPlayhead(0);
+      } else if (!editingText && event.key === 'End') {
+        event.preventDefault();
+        setPlaying(false);
+        setPlayhead(duration);
+      } else if (!editingText && event.key === '?') {
+        event.preventDefault();
+        setShortcutGuideOpen(true);
+      } else if (!editingText && event.key === 'Escape') {
+        setPlaying(false);
+        if (shortcutGuideOpen) setShortcutGuideOpen(false);
+        else {
+          setSelectedClipId(null);
+          clearTextState();
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [deleteSelected, duplicateSelected, importMedia, openProject, redo, saveProject, splitSelected, undo]);
+  }, [clearTextState, copySelected, deleteSelected, duplicateSelected, duration, importMedia, nudgeSelected, openProject, pasteCopied, project.frameRate, redo, saveProject, selectedClipId, shortcutGuideOpen, splitSelected, undo]);
 
   return (
     <div className="app-shell">
@@ -485,8 +577,9 @@ export default function App() {
           <CaretDown size={12} />
         </div>
         <nav className="topbar__actions" aria-label="Project actions">
-          <IconButton label="Undo" onClick={undo} disabled={!history.current.past.length}><ArrowCounterClockwise size={16} /></IconButton>
-          <IconButton label="Redo" onClick={redo} disabled={!history.current.future.length}><ArrowClockwise size={16} /></IconButton>
+          <IconButton label="Undo" shortcut="⌘Z" onClick={undo} disabled={!history.current.past.length}><ArrowCounterClockwise size={16} /></IconButton>
+          <IconButton label="Redo" shortcut="⇧⌘Z" onClick={redo} disabled={!history.current.future.length}><ArrowClockwise size={16} /></IconButton>
+          <IconButton label="Keyboard shortcuts" shortcut="?" onClick={() => setShortcutGuideOpen(true)}><Keyboard size={16} /></IconButton>
           <span className="toolbar-divider" />
           <button className="quiet-button" type="button" onClick={openProject}><FolderOpen size={16} /> Open</button>
           <button className="quiet-button" type="button" onClick={importMedia}><UploadSimple size={16} /> Import</button>
@@ -545,12 +638,12 @@ export default function App() {
           <div className="transport">
             <div className="transport__time"><strong>{formatTime(playhead, true)}</strong><span>/ {formatTime(duration, true)}</span></div>
             <div className="transport__controls">
-              <IconButton label="Go to start" onClick={() => { setPlayhead(0); setPlaying(false); }}><SkipBack size={17} weight="fill" /></IconButton>
-              <IconButton label="Back one second" onClick={() => setPlayhead((value) => Math.max(0, value - 1))}><Rewind size={17} weight="fill" /></IconButton>
-              <button className="play-button" type="button" aria-label={playing ? 'Pause' : 'Play'} onClick={() => duration && setPlaying((value) => !value)}>
+              <IconButton label="Go to start" shortcut="Home" onClick={() => { setPlayhead(0); setPlaying(false); }}><SkipBack size={17} weight="fill" /></IconButton>
+              <IconButton label="Back one second" shortcut="Shift ←" onClick={() => setPlayhead((value) => Math.max(0, value - 1))}><Rewind size={17} weight="fill" /></IconButton>
+              <button className="play-button" type="button" aria-label={playing ? 'Pause' : 'Play'} title="Play or pause (Space)" onClick={() => duration && setPlaying((value) => !value)}>
                 {playing ? <Pause size={18} weight="fill" /> : <Play size={18} weight="fill" />}
               </button>
-              <IconButton label="Forward one second" onClick={() => setPlayhead((value) => Math.min(duration, value + 1))}><SkipForward size={17} weight="fill" /></IconButton>
+              <IconButton label="Forward one second" shortcut="Shift →" onClick={() => setPlayhead((value) => Math.min(duration, value + 1))}><SkipForward size={17} weight="fill" /></IconButton>
             </div>
             <div className="transport__status"><span>30 FPS</span><span>HD</span></div>
           </div>
@@ -604,6 +697,8 @@ export default function App() {
         onClose={() => setVoiceRecorderOpen(false)}
         onComplete={addVoiceRecording}
       />
+      <ShortcutGuide open={shortcutGuideOpen} onClose={() => setShortcutGuideOpen(false)} />
+      <ActionToast notice={notice} onClose={closeNotice} />
     </div>
   );
 }

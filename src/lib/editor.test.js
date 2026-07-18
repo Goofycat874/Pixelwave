@@ -357,4 +357,43 @@ describe('editor timeline model', () => {
     expect(editor.snapTimelineTime(3.94, clips, 64, 'moving', true)).toBe(4);
     expect(editor.snapTimelineTime(3.94, clips, 64, 'moving', false)).toBe(3.94);
   });
+
+  it('steps the playhead by frames or whole seconds without leaving the sequence', () => {
+    expect(editor.stepPlayhead(2, -1, 10, 30)).toBeCloseTo(1.967, 3);
+    expect(editor.stepPlayhead(2, 1, 10, 30, true)).toBe(3);
+    expect(editor.stepPlayhead(0, -1, 10, 30)).toBe(0);
+    expect(editor.stepPlayhead(9.8, 1, 10, 30, true)).toBe(10);
+  });
+
+  it('nudges only the selected clip and clamps it at the sequence start', () => {
+    const first = createClip(video, 1);
+    const second = createClip({ ...video, id: 'media-b' }, 5);
+    const moved = editor.nudgeClip([first, second], first.id, -2);
+
+    expect(moved[0].start).toBe(0);
+    expect(moved[1]).toBe(second);
+    expect(first.start).toBe(1);
+  });
+
+  it('pastes a deeply independent clip at the requested playhead', () => {
+    const source = createClip(video, 2);
+    source.effects.primaryWheels.lift.x = 0.4;
+    source.transcript.words = [{ text: 'hello', start: 0, end: 0.4 }];
+    source.textOverlays = [{ ...editor.createTextOverlay('text-a'), text: 'Original' }];
+
+    const pasted = editor.pasteClipAt(source, 7.25);
+
+    expect(pasted).toMatchObject({ assetId: source.assetId, start: 7.25, track: source.track });
+    expect(pasted.id).not.toBe(source.id);
+    expect(pasted.effects).not.toBe(source.effects);
+    expect(pasted.effects.primaryWheels.lift).not.toBe(source.effects.primaryWheels.lift);
+    expect(pasted.transcript.words).not.toBe(source.transcript.words);
+    expect(pasted.textOverlays[0]).not.toBe(source.textOverlays[0]);
+  });
+
+  it('calculates a clamped timeline zoom that fits the sequence viewport', () => {
+    expect(editor.timelineZoomForDuration(10, 1000)).toBeCloseTo(0.465, 3);
+    expect(editor.timelineZoomForDuration(120, 1000)).toBe(0.15);
+    expect(editor.timelineZoomForDuration(1, 10000)).toBe(2);
+  });
 });
