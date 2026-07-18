@@ -7,6 +7,8 @@ Pixelwave is a desktop video editor built with Electron and React. It focuses on
 - Import video, audio, and still images, including MP4 and MOV sources
 - Automatic MP4 proxy generation when Electron cannot decode an imported video directly
 - Multi-layer video and audio timeline with smooth scrubbing and snapping
+- Frame-accurate keyboard navigation, clip nudging, and internal copy/paste
+- Fit-sequence and center-playhead timeline controls
 - Move, trim, split, duplicate, reorder, and change clip playback speed
 - Directly position and scale clips in the program monitor
 - Multiple editable text overlays with custom fonts, backgrounds, and placement controls
@@ -63,6 +65,8 @@ npm start
 5. Choose MP4, MOV, or WebM and export the finished timeline.
 
 The three-dot menu on each media item can append it to the timeline, reveal the source in Finder, or remove it and its linked timeline instances from the project. Removal is recorded in project history, so it can be undone.
+
+Press `?` inside the editor to open the keyboard shortcut guide. Arrow keys step through frames, Shift+Arrow moves by one second, Option/Alt+Arrow nudges the selected clip, and Cmd/Ctrl+C and Cmd/Ctrl+V copy and paste clips at the playhead.
 
 ## Media notes
 

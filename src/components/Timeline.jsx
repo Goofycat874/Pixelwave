@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
 import {
+  CornersOut,
   Copy,
+  CrosshairSimple,
   FilmStrip,
   MagnetStraight,
   Minus,
@@ -17,6 +19,7 @@ import {
   snapTimelineTime,
   TIMELINE_TRACKS,
   timelineTimeFromPointer,
+  timelineZoomForDuration,
   trackAcceptsKind,
 } from '../lib/editor.js';
 import IconButton from './IconButton.jsx';
@@ -59,6 +62,20 @@ export default function Timeline({
 
   function snapped(value, excludedClipId = null) {
     return snapTimelineTime(value, clips, pixelsPerSecond, excludedClipId, snapping);
+  }
+
+  function fitSequence() {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    onZoom(timelineZoomForDuration(duration, viewport.clientWidth));
+    requestAnimationFrame(() => viewport.scrollTo({ left: 0, behavior: 'smooth' }));
+  }
+
+  function findPlayhead() {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const left = 84 + playhead * pixelsPerSecond - viewport.clientWidth / 2;
+    viewport.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
   }
 
   function beginScrub(event) {
@@ -203,13 +220,16 @@ export default function Timeline({
           <span className="timeline-layer-count">3 VIDEO · 3 AUDIO</span>
         </div>
         <div className="timeline-toolbar__tools">
-          <IconButton label="Split at playhead" onClick={onSplit} disabled={!selectedClipId}><Scissors size={16} /></IconButton>
-          <IconButton label="Duplicate selected clip" onClick={onDuplicate} disabled={!selectedClipId}><Copy size={16} /></IconButton>
-          <IconButton label="Delete selected clip" onClick={onDelete} disabled={!selectedClipId}><Trash size={16} /></IconButton>
+          <IconButton label="Split at playhead" shortcut="S" onClick={onSplit} disabled={!selectedClipId}><Scissors size={16} /></IconButton>
+          <IconButton label="Duplicate selected clip" shortcut="⌘D" onClick={onDuplicate} disabled={!selectedClipId}><Copy size={16} /></IconButton>
+          <IconButton label="Delete selected clip" shortcut="Delete" onClick={onDelete} disabled={!selectedClipId}><Trash size={16} /></IconButton>
           <span className="toolbar-divider" />
           <IconButton label="Toggle snapping" active={snapping} onClick={() => setSnapping((value) => !value)}><MagnetStraight size={16} /></IconButton>
-          <IconButton label="Zoom out" onClick={() => onZoom(Math.max(0.45, zoom - 0.15))}><Minus size={16} /></IconButton>
-          <div className="zoom-meter"><span style={{ width: `${((zoom - 0.45) / 1.55) * 100}%` }} /></div>
+          <IconButton label="Fit sequence" onClick={fitSequence}><CornersOut size={16} /></IconButton>
+          <IconButton label="Center playhead" onClick={findPlayhead}><CrosshairSimple size={16} /></IconButton>
+          <IconButton label="Zoom out" onClick={() => onZoom(Math.max(0.15, zoom - 0.15))}><Minus size={16} /></IconButton>
+          <div className="zoom-meter" aria-label={`Timeline zoom ${Math.round(zoom * 100)} percent`}><span style={{ width: `${((zoom - 0.15) / 1.85) * 100}%` }} /></div>
+          <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
           <IconButton label="Zoom in" onClick={() => onZoom(Math.min(2, zoom + 0.15))}><Plus size={16} /></IconButton>
         </div>
       </div>
