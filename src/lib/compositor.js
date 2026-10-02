@@ -1,6 +1,7 @@
 // The compositor draws one frame of the timeline into a 2D canvas. The live preview and
 // the exporter both call drawFrame(), so what you see while editing is what you export.
 import { animatedEffects, applyEasing, clipLocalTime, fadeEnvelope } from './animation.js';
+import { gradeChannels, gradeKey } from './color.js';
 import { activeClipsAt, clipTextOverlays, clipTrack, computedColorAdjustments } from './editor.js';
 import { isClipHidden, laneKind } from './project.js';
 import { hexToRgba, layoutTextOverlay, revealLines, textAnimationState, textFont, textReferenceScale } from './text.js';
@@ -16,6 +17,8 @@ export const TRANSITIONS = Object.freeze([
   ['zoom', 'Zoom'],
   ['blur', 'Blur'],
 ]);
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -91,17 +94,16 @@ export function chromaKeyMatrix({ keyMode = 'green', keyStrength = 40, keySoftne
   ];
 }
 
-const chromaFilters = new Map();
+// SVG filters live in one hidden <svg>. Dragging a slider creates a new filter per value, so the
+// registry keeps the most recently used ones and removes the rest.
+const FILTER_LIMIT = 48;
+const filterRegistry = new Map();
+let filterSerial = 0;
 
-export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
-  if (!doc?.createElementNS || !effects || effects.keyMode === 'off' || !effects.keyMode) return null;
-  const values = chromaKeyMatrix(effects).join(' ');
-  const cacheKey = `${effects.keyMode}:${values}`;
-  if (chromaFilters.has(cacheKey)) return chromaFilters.get(cacheKey);
-  const ns = 'http://www.w3.org/2000/svg';
+function filterRoot(doc) {
   let svg = doc.getElementById('pixelwave-filters');
   if (!svg) {
-    svg = doc.createElementNS(ns, 'svg');
+    svg = doc.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('id', 'pixelwave-filters');
     svg.setAttribute('width', '0');
     svg.setAttribute('height', '0');
@@ -110,40 +112,98 @@ export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
     svg.style.pointerEvents = 'none';
     doc.body.appendChild(svg);
   }
-  const id = `pw-key-${chromaFilters.size + 1}`;
-  const filter = doc.createElementNS(ns, 'filter');
+  return svg;
+}
+
+export function registeredFilter(key, build, doc = globalThis.document) {
+  if (!doc?.createElementNS) return null;
+  const cached = filterRegistry.get(key);
+  if (cached && doc.getElementById?.(cached.id)) {
+    filterRegistry.delete(key);
+    filterRegistry.set(key, cached);
+    return `url(#${cached.id})`;
+  }
+  filterSerial += 1;
+  const id = `pw-fx-${filterSerial}`;
+  const filter = doc.createElementNS(SVG_NS, 'filter');
   filter.setAttribute('id', id);
   filter.setAttribute('color-interpolation-filters', 'sRGB');
-  const matrix = doc.createElementNS(ns, 'feColorMatrix');
-  matrix.setAttribute('type', 'matrix');
-  matrix.setAttribute('in', 'SourceGraphic');
-  matrix.setAttribute('result', 'keyed');
-  matrix.setAttribute('values', values);
-  const composite = doc.createElementNS(ns, 'feComposite');
-  composite.setAttribute('in', 'keyed');
-  composite.setAttribute('in2', 'SourceGraphic');
-  composite.setAttribute('operator', 'in');
-  filter.append(matrix, composite);
-  svg.appendChild(filter);
-  const reference = `url(#${id})`;
-  chromaFilters.set(cacheKey, reference);
-  return reference;
+  build(filter, (name) => doc.createElementNS(SVG_NS, name));
+  filterRoot(doc).appendChild(filter);
+  filterRegistry.set(key, { id, element: filter });
+  while (filterRegistry.size > FILTER_LIMIT) {
+    const [oldestKey, oldest] = filterRegistry.entries().next().value;
+    oldest.element.remove?.();
+    filterRegistry.delete(oldestKey);
+  }
+  return `url(#${id})`;
+}
+
+export function resetFilterRegistry() {
+  filterRegistry.clear();
+}
+
+export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
+  if (!effects || effects.keyMode === 'off' || !effects.keyMode) return null;
+  const values = chromaKeyMatrix(effects).join(' ');
+  return registeredFilter(`key:${effects.keyMode}:${values}`, (filter, create) => {
+    const matrix = create('feColorMatrix');
+    matrix.setAttribute('type', 'matrix');
+    matrix.setAttribute('in', 'SourceGraphic');
+    matrix.setAttribute('result', 'keyed');
+    matrix.setAttribute('values', values);
+    const composite = create('feComposite');
+    composite.setAttribute('in', 'keyed');
+    composite.setAttribute('in2', 'SourceGraphic');
+    composite.setAttribute('operator', 'in');
+    filter.append(matrix, composite);
+  }, doc);
+}
+
+// Temperature, tint and the lift/gamma/gain wheels as a per-channel transfer. A linear stage
+// applies gain and lift, then a gamma stage bends the midtones.
+export function ensureGradeFilter(effects, doc = globalThis.document) {
+  const channels = gradeChannels(effects);
+  if (!channels) return null;
+  return registeredFilter(`grade:${gradeKey(channels)}`, (filter, create) => {
+    const linear = create('feComponentTransfer');
+    linear.setAttribute('result', 'balanced');
+    const bend = create('feComponentTransfer');
+    bend.setAttribute('in', 'balanced');
+    ['R', 'G', 'B'].forEach((channel, index) => {
+      const { slope, intercept, exponent } = channels[index];
+      const lineFunction = create(`feFunc${channel}`);
+      lineFunction.setAttribute('type', 'linear');
+      lineFunction.setAttribute('slope', String(slope));
+      lineFunction.setAttribute('intercept', String(intercept));
+      linear.appendChild(lineFunction);
+      const gammaFunction = create(`feFunc${channel}`);
+      gammaFunction.setAttribute('type', 'gamma');
+      gammaFunction.setAttribute('amplitude', '1');
+      gammaFunction.setAttribute('exponent', String(exponent));
+      gammaFunction.setAttribute('offset', '0');
+      bend.appendChild(gammaFunction);
+    });
+    filter.append(linear, bend);
+  }, doc);
 }
 
 // ---------- filters ----------
 
-export function mediaFilter(effects = {}, { blurPixels = 0, keyFilter = null } = {}) {
+// Chromium's canvas only honors an SVG url() filter that comes before the CSS filter functions;
+// one placed after them renders black. So the key and the grade lead, then the basic adjustments.
+export function mediaFilter(effects = {}, { blurPixels = 0, keyFilter = null, gradeFilter = null } = {}) {
   const grade = computedColorAdjustments(effects);
-  const hue = (grade.temperature < 0 ? 185 : 0) + grade.tint * 0.25 + (Number(effects.hue) || 0);
   const parts = [];
   if (keyFilter) parts.push(keyFilter);
+  if (gradeFilter) parts.push(gradeFilter);
   parts.push(
     `brightness(${100 + grade.exposure}%)`,
     `contrast(${grade.contrast}%)`,
     `saturate(${grade.saturation}%)`,
-    `sepia(${Math.round(Math.abs(grade.temperature) * 0.2)}%)`,
-    `hue-rotate(${Math.round(hue * 100) / 100}deg)`,
   );
+  const hue = Number(effects.hue) || 0;
+  if (hue) parts.push(`hue-rotate(${Math.round(hue * 100) / 100}deg)`);
   if (effects.invert) parts.push(`invert(${clamp(Number(effects.invert) || 0, 0, 100)}%)`);
   if (blurPixels > 0.01) parts.push(`blur(${Math.round(blurPixels * 100) / 100}px)`);
   return parts.join(' ');
@@ -241,6 +301,7 @@ function drawMedia(context, source, clip, effects, alpha, mods, env) {
   const { rect, crop } = geometry;
   const radius = (clamp(Number(effects.radius) || 0, 0, 100) / 100) * (Math.min(rect.width, rect.height) / 2);
   const keyFilter = ensureChromaKeyFilter(effects, env.document);
+  const gradeFilter = ensureGradeFilter(effects, env.document);
   const deviceScale = pixelScale * scale;
 
   context.save();
@@ -270,7 +331,7 @@ function drawMedia(context, source, clip, effects, alpha, mods, env) {
     context.clip();
   }
   const blurPixels = ((Number(effects.blur) || 0) * refScale + (mods.blur || 0)) * deviceScale;
-  context.filter = mediaFilter(effects, { blurPixels, keyFilter });
+  context.filter = mediaFilter(effects, { blurPixels, keyFilter, gradeFilter });
   context.drawImage(
     source,
     crop.left * size.width,

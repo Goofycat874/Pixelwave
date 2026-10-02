@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   chromaKeyMatrix,
   drawFrame,
+  ensureGradeFilter,
   framePlan,
   hitTest,
   mediaFilter,
   mediaGeometry,
   pointInPolygon,
+  registeredFilter,
+  resetFilterRegistry,
   sourceTimeAt,
   transitionProgress,
 } from './compositor.js';
@@ -70,9 +73,14 @@ describe('chroma key matrix', () => {
 });
 
 describe('media filters and geometry', () => {
-  it('maps color controls into a canvas filter with the key first', () => {
-    expect(mediaFilter({ exposure: 12, contrast: 93, saturation: 121, temperature: 20, tint: 10 }, { blurPixels: 2, keyFilter: 'url(#k)' }))
-      .toBe('url(#k) brightness(112%) contrast(93%) saturate(121%) sepia(4%) hue-rotate(2.5deg) blur(2px)');
+  it('puts SVG filters first, then the basics, then blur', () => {
+    expect(mediaFilter({ exposure: 12, contrast: 93, saturation: 121, hue: 20, invert: 10 }, { blurPixels: 2, keyFilter: 'url(#k)', gradeFilter: 'url(#g)' }))
+      .toBe('url(#k) url(#g) brightness(112%) contrast(93%) saturate(121%) hue-rotate(20deg) invert(10%) blur(2px)');
+  });
+
+  it('no longer fakes white balance with sepia or a large hue rotation', () => {
+    const filter = mediaFilter({ temperature: -100, tint: 100 });
+    expect(filter).not.toMatch(/sepia|hue-rotate/);
   });
 
   it('crops inside the fitted frame without moving the picture', () => {
@@ -149,5 +157,54 @@ describe('drawing frames', () => {
     const diamond = [[0, -10], [10, 0], [0, 10], [-10, 0]];
     expect(pointInPolygon([0, 0], diamond)).toBe(true);
     expect(pointInPolygon([9, 9], diamond)).toBe(false);
+  });
+});
+
+function fakeDocument() {
+  const byId = new Map();
+  const make = (name) => {
+    const element = {
+      name,
+      attributes: {},
+      children: [],
+      style: {},
+      setAttribute(key, value) { this.attributes[key] = value; if (key === 'id') byId.set(value, this); },
+      appendChild(child) { this.children.push(child); child.parent = this; return child; },
+      append(...children) { children.forEach((child) => this.appendChild(child)); },
+      remove() { if (this.attributes.id) byId.delete(this.attributes.id); this.parent?.children.splice(this.parent.children.indexOf(this), 1); },
+    };
+    return element;
+  };
+  const body = make('body');
+  return { body, createElementNS: (_ns, name) => make(name), getElementById: (id) => byId.get(id) || null };
+}
+
+describe('grade filter registry', () => {
+  it('adds nothing for a neutral grade', () => {
+    resetFilterRegistry();
+    expect(ensureGradeFilter({ temperature: 0, tint: 0 }, fakeDocument())).toBeNull();
+  });
+
+  it('builds a linear and a gamma stage per channel and reuses identical grades', () => {
+    resetFilterRegistry();
+    const doc = fakeDocument();
+    const first = ensureGradeFilter({ temperature: 60 }, doc);
+    expect(first).toMatch(/^url\(#pw-fx-\d+\)$/);
+    expect(ensureGradeFilter({ temperature: 60 }, doc)).toBe(first);
+    expect(ensureGradeFilter({ temperature: -60 }, doc)).not.toBe(first);
+    const svg = doc.body.children[0];
+    const filter = svg.children[0];
+    expect(filter.attributes['color-interpolation-filters']).toBe('sRGB');
+    expect(filter.children.map((stage) => stage.name)).toEqual(['feComponentTransfer', 'feComponentTransfer']);
+    expect(filter.children[0].children.map((fn) => fn.attributes.type)).toEqual(['linear', 'linear', 'linear']);
+    expect(filter.children[1].children.map((fn) => fn.attributes.type)).toEqual(['gamma', 'gamma', 'gamma']);
+  });
+
+  it('keeps only the most recently used filters while a slider is dragged', () => {
+    resetFilterRegistry();
+    const doc = fakeDocument();
+    for (let value = 1; value <= 120; value += 1) ensureGradeFilter({ temperature: value * 0.8 }, doc);
+    expect(doc.body.children[0].children.length).toBeLessThanOrEqual(48);
+    expect(registeredFilter('custom', () => {}, null)).toBeNull();
   });
 });

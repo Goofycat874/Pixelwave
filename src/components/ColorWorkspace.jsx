@@ -2,7 +2,6 @@ import { ArrowCounterClockwise } from '@phosphor-icons/react';
 import {
   applyColorPreset,
   COLOR_PRESETS,
-  computedColorAdjustments,
   defaultEffects,
   defaultPrimaryWheels,
   isLiveWheelDrag,
@@ -78,7 +77,7 @@ function ColorWheel({ label, value, onChange, onBeginEdit }) {
         }}
         onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
       >
-        <span className="wheel__puck" style={{ transform: `translate(${value.x * 42}%, ${value.y * -42}%)` }} />
+        <span className="wheel__puck" style={{ left: `${50 + value.x * 42}%`, top: `${50 - value.y * 42}%` }} />
       </div>
       <span className="wheel__label">{label}</span>
       <input
@@ -109,7 +108,6 @@ function activeColorPreset(effects = {}) {
 export default function ColorWorkspace({ clip, onUpdate, onLiveUpdate = onUpdate, onBeginEdit = () => {} }) {
   const effects = { ...effectDefaults, ...(clip.effects || {}) };
   const wheels = { ...wheelDefaults, ...(effects.primaryWheels || {}) };
-  const grade = computedColorAdjustments(effects);
   const activePreset = activeColorPreset(effects);
 
   return (
@@ -164,12 +162,6 @@ export default function ColorWorkspace({ clip, onUpdate, onLiveUpdate = onUpdate
             onChange={(value) => onLiveUpdate({ effects: { ...effects, [key]: value } })}
           />
         ))}
-        <dl className="grade-readout" aria-label="Combined grade">
-          <div><dt>Exposure</dt><dd>{grade.exposure > 0 ? '+' : ''}{grade.exposure}</dd></div>
-          <div><dt>Contrast</dt><dd>{grade.contrast}</dd></div>
-          <div><dt>Saturation</dt><dd>{grade.saturation}</dd></div>
-          <div><dt>Temp</dt><dd>{grade.temperature > 0 ? '+' : ''}{grade.temperature}</dd></div>
-        </dl>
       </Section>
     </div>
   );

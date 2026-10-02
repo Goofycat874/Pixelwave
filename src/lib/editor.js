@@ -76,24 +76,19 @@ export function resetColorEffects(effects = {}) {
   return applyColorPreset(effects, 'original');
 }
 
-function safeWheel(wheels, key) {
-  return { x: 0, y: 0, luma: 0, ...(wheels?.[key] || {}) };
-}
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+// The basic color sliders, clamped. Temperature, tint and the wheels are graded per channel in
+// src/lib/color.js, because folding them into brightness and hue shifts cannot balance color.
 export function computedColorAdjustments(effects = {}) {
-  const lift = safeWheel(effects.primaryWheels, 'lift');
-  const gamma = safeWheel(effects.primaryWheels, 'gamma');
-  const gain = safeWheel(effects.primaryWheels, 'gain');
   return {
-    exposure: clamp(Math.round((effects.exposure || 0) + lift.luma * 10 + gamma.luma * 18 + gain.luma * 25), -70, 70),
-    contrast: clamp(Math.round((effects.contrast ?? 100) - lift.luma * 10 + gamma.luma * 5 + gain.luma * 16), 0, 220),
+    exposure: clamp(Math.round(effects.exposure || 0), -70, 70),
+    contrast: clamp(Math.round(effects.contrast ?? 100), 0, 220),
     saturation: clamp(Math.round(effects.saturation ?? 100), 0, 220),
-    temperature: clamp(Math.round((effects.temperature || 0) + lift.x * 20 + gamma.x * 28 + gain.x * 36), -100, 100),
-    tint: clamp(Math.round((effects.tint || 0) + lift.y * 18 + gamma.y * 26 + gain.y * 34), -100, 100),
+    temperature: clamp(Math.round(effects.temperature || 0), -100, 100),
+    tint: clamp(Math.round(effects.tint || 0), -100, 100),
   };
 }
 

@@ -32,6 +32,8 @@ The previous interface stacked frosted glass, radial color glows, dot-grid backg
 - **Raw RGBA to FFmpeg.** The exporter sends raw frames instead of PNGs, which removes PNG encoding from the hot path. Main validates frame size before writing.
 - **Keyframe time is clip-local.** Trimming, splitting and changing speed move keyframes with the picture.
 - **Generated backgrounds are recipes.** Project files store the color or gradient definition and the picture is rebuilt on open.
+- **Color grading is per channel.** Temperature, tint and the lift/gamma/gain wheels resolve to one transfer per RGB channel (`src/lib/color.js`) that the compositor applies as an SVG filter. The first version approximated white balance with `sepia()` and a 185 degree `hue-rotate()`, which barely changed anything when warming and turned the whole picture green when cooling.
+- **SVG filters go first.** Chromium's canvas renders black when a `url(#filter)` follows CSS filter functions such as `brightness()`, so `mediaFilter` always lists the key and grade filters before the basics.
 - **CSP.** `connect-src` now allows `pixelwave-media:` so waveforms and audio export can read local files.
 
 ## Not done yet

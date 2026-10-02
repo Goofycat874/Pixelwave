@@ -490,7 +490,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offs
   touch-action: none;
 }
 .wheel__disc:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-.wheel__puck { position: absolute; top: calc(50% - 5px); left: calc(50% - 5px); width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background: #1b1d21; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); pointer-events: none; }
+.wheel__puck { position: absolute; top: 50%; left: 50%; width: 10px; height: 10px; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: #1b1d21; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); pointer-events: none; }
 .wheel__label { color: var(--text-2); font-size: 12px; }
 .wheel__luma { width: 100%; min-width: 0; height: 14px; margin: 0; appearance: none; background: transparent; cursor: pointer; }
 .wheel__luma::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: linear-gradient(to right, #191a1c, #d9dbde); }
