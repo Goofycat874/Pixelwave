@@ -9,6 +9,12 @@ export const ANIMATABLE_PROPERTIES = Object.freeze({
   opacity: { label: 'Opacity', fallback: 100 },
   volume: { label: 'Volume', fallback: 100 },
   blur: { label: 'Blur', fallback: 0 },
+  sharpen: { label: 'Sharpen', fallback: 0 },
+  glow: { label: 'Glow', fallback: 0 },
+  grain: { label: 'Film grain', fallback: 0 },
+  aberration: { label: 'Chromatic aberration', fallback: 0 },
+  glitch: { label: 'Glitch', fallback: 0 },
+  pixelate: { label: 'Pixelate', fallback: 0 },
 });
 
 export const EASINGS = Object.freeze([

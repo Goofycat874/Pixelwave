@@ -9,6 +9,12 @@ import {
 } from '@phosphor-icons/react';
 import { clearKeyframes } from '../../lib/animation.js';
 import { TRANSITIONS } from '../../lib/compositor.js';
+import {
+  activeStylizePreset,
+  applyStylizePreset,
+  STYLIZE_KEYS,
+  STYLIZE_PRESET_LABELS,
+} from '../../lib/effects.js';
 import { clipTextOverlays, setClipSpeed } from '../../lib/editor.js';
 import { Button, IconButton, PropertyRow, Section, Segmented } from '../ui.jsx';
 
@@ -105,6 +111,35 @@ function CropSection({ edit }) {
       <PropertyRow {...edit.effectRow('cropRight', 'Crop right', 0, 90, 0.5, '%')} />
       <PropertyRow {...edit.effectRow('radius', 'Corners', 0, 100, 1, '%')} />
       <PropertyRow {...edit.effectRow('shadow', 'Shadow', 0, 100, 1, '%')} />
+    </Section>
+  );
+}
+
+function StylizeSection({ clip, edit, onCommitClip }) {
+  const effects = Object.fromEntries(STYLIZE_KEYS.map((key) => [key, edit.value(key)]));
+  const active = activeStylizePreset(effects);
+  const applyPreset = ([key, label]) => onCommitClip(clip.id, (current) => {
+    const cleared = clearKeyframes(current, STYLIZE_KEYS);
+    return { ...cleared, effects: applyStylizePreset(cleared.effects, key) };
+  }, key === 'none' ? 'Remove stylize effects' : `Stylize: ${label}`);
+
+  return (
+    <Section
+      id="stylize"
+      title="Stylize"
+      badge={active === 'none' ? null : STYLIZE_PRESET_LABELS.find(([key]) => key === active)?.[1] || 'Custom'}
+    >
+      <div className="chip-grid chip-grid--4" role="group" aria-label="Stylize looks">
+        {STYLIZE_PRESET_LABELS.map((preset) => (
+          <button key={preset[0]} type="button" className={active === preset[0] ? 'is-active' : ''} onClick={() => applyPreset(preset)}>{preset[1]}</button>
+        ))}
+      </div>
+      <PropertyRow {...edit.effectRow('sharpen', 'Sharpen', 0, 100, 1, '%')} />
+      <PropertyRow {...edit.effectRow('glow', 'Glow', 0, 100, 1, '%')} />
+      <PropertyRow {...edit.effectRow('grain', 'Film grain', 0, 100, 1, '%')} />
+      <PropertyRow {...edit.effectRow('aberration', 'Color fringe', 0, 100, 1, '%')} />
+      <PropertyRow {...edit.effectRow('glitch', 'Glitch', 0, 100, 1, '%')} />
+      <PropertyRow {...edit.effectRow('pixelate', 'Pixelate', 0, 100, 1, '%')} />
     </Section>
   );
 }
@@ -271,6 +306,7 @@ export default function EditTab({ clip, edit, handlers }) {
     <>
       {visual && <TransformSection clip={clip} edit={edit} onCommitClip={handlers.onCommitClip} />}
       {visual && <CropSection edit={edit} />}
+      {visual && <StylizeSection clip={clip} edit={edit} onCommitClip={handlers.onCommitClip} />}
       {visual && <EffectsSection edit={edit} />}
       {(clip.kind === 'video' || clip.kind === 'audio') && <AudioSection clip={clip} edit={edit} onDetachAudio={handlers.onDetachAudio} />}
       <FadeSection clip={clip} edit={edit} />

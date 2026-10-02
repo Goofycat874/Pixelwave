@@ -18,7 +18,10 @@ Pixelwave is a desktop video editor built with Electron and React. It aims to be
 - Quick layouts for picture-in-picture and split screen, crop, rounded corners, drop shadow
 - Green and blue screen keying with softness and spill control
 - Eight transitions, fade in and out on any clip
-- Color looks, lift/gamma/gain wheels, exposure, contrast, saturation, temperature, tint, hue, invert, blur and vignette
+- Color grading: twelve looks, lift/gamma/gain wheels, RGB and per-channel curves, highlights, shadows, whites and blacks, exposure in stops, white balance, contrast and saturation
+- Live scopes for the program monitor: waveform, RGB parade, vectorscope with skin-tone line, and histogram with clipping readout
+- Stylize effects with one-click looks (Crisp, Grain, Dreamy, VHS, Glitch, Pixelate): sharpen, glow, film grain, color fringe, glitch and pixelate, all keyframable
+- Hue, invert, blur and vignette
 
 **Titles and captions**
 - Standalone text clips with ten ready-made styles, 14 bundled fonts, outline, glow, shadow, background box, and in and out animations
@@ -78,6 +81,7 @@ Press `?` for every keyboard shortcut, or `Ctrl/Cmd + K` to search actions by na
 ## How it is built
 
 - `src/lib/compositor.js` draws one frame of the timeline to a canvas. The live monitor and the exporter both call it.
+- `src/lib/color.js` is the grading engine. Exposure and white balance run in linear light, then the wheels, tone, contrast and curves, and everything bakes into one 256-entry table per channel that the compositor applies as an SVG filter. `src/lib/scopes.js` is the scope math. `src/lib/effects.js` builds the stylize filter and holds the pixelate math.
 - `src/lib/animation.js` holds keyframes, easing, fades and the motion presets. `src/lib/text.js` holds text styling, layout and text animation.
 - `src/lib/editor.js` and `src/lib/project.js` are pure, tested functions for every timeline edit and the project format. Older version 1 projects are upgraded on open.
 - `src/hooks/useProjectHistory.js` owns the project and its undo stack.
