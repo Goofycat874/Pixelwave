@@ -143,14 +143,14 @@ describe('voice transcription helpers', () => {
   });
 
   it('uses a safe Google Font stack for captions', () => {
-    expect(captionFontStack('Bebas Neue')).toBe("'Bebas Neue', sans-serif");
-    expect(captionFontStack('Made Up Font')).toBe("'Outfit', sans-serif");
+    expect(captionFontStack('Bebas Neue')).toBe("'Bebas Neue', 'Bebas Neue', sans-serif");
+    expect(captionFontStack('Made Up Font')).toBe("'Outfit Variable', 'Outfit', sans-serif");
   });
 
   it('uses an imported custom font only when it matches the selected family', () => {
     const customFont = { family: 'Pixelwave Custom', src: 'pixelwave-media://font' };
     expect(captionFontStack('Pixelwave Custom', customFont)).toBe("'Pixelwave Custom', sans-serif");
-    expect(captionFontStack('Made Up Font', customFont)).toBe("'Outfit', sans-serif");
+    expect(captionFontStack('Made Up Font', customFont)).toBe("'Outfit Variable', 'Outfit', sans-serif");
   });
 
   it('registers an imported font with the browser font set', async () => {

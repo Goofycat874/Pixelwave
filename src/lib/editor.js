@@ -1,4 +1,10 @@
+import { scaleKeyframes, shiftKeyframes, splitKeyframes } from './animation.js';
+
 const MIN_CLIP_DURATION = 0.1;
+export const MAX_TRACK_INDEX = 5;
+export const TIMELINE_GUTTER = 148;
+export const MIN_TIMELINE_ZOOM = 0.05;
+export const MAX_TIMELINE_ZOOM = 12;
 
 export const COLOR_PRESETS = {
   original: { exposure: 0, contrast: 100, saturation: 100, temperature: 0, tint: 0 },
@@ -43,6 +49,18 @@ export function defaultEffects() {
     positionY: 0,
     flipX: false,
     flipY: false,
+    cropTop: 0,
+    cropRight: 0,
+    cropBottom: 0,
+    cropLeft: 0,
+    radius: 0,
+    shadow: 0,
+    hue: 0,
+    invert: 0,
+    keyMode: 'off',
+    keyStrength: 40,
+    keySoftness: 30,
+    keySpill: 40,
   };
 }
 
@@ -80,17 +98,22 @@ export function computedColorAdjustments(effects = {}) {
 }
 
 export function clipTrack(clip) {
-  return Math.min(2, Math.max(0, Math.round(Number(clip?.track) || 0)));
+  return Math.min(MAX_TRACK_INDEX, Math.max(0, Math.round(Number(clip?.track) || 0)));
 }
 
-export const TIMELINE_TRACKS = Object.freeze([
-  { kind: 'video', track: 2, label: 'V3' },
-  { kind: 'video', track: 1, label: 'V2' },
-  { kind: 'video', track: 0, label: 'V1' },
-  { kind: 'audio', track: 0, label: 'A1' },
-  { kind: 'audio', track: 1, label: 'A2' },
-  { kind: 'audio', track: 2, label: 'A3' },
-]);
+export function timelineTracks(counts = { video: 3, audio: 3 }) {
+  const video = Math.max(1, Math.min(MAX_TRACK_INDEX + 1, Number(counts.video) || 3));
+  const audio = Math.max(1, Math.min(MAX_TRACK_INDEX + 1, Number(counts.audio) || 3));
+  return [
+    ...Array.from({ length: video }, (_, index) => {
+      const track = video - 1 - index;
+      return { kind: 'video', track, label: `V${track + 1}` };
+    }),
+    ...Array.from({ length: audio }, (_, track) => ({ kind: 'audio', track, label: `A${track + 1}` })),
+  ];
+}
+
+export const TIMELINE_TRACKS = Object.freeze(timelineTracks());
 
 export function trackAcceptsKind(trackKind, mediaKind) {
   return trackKind === (mediaKind === 'audio' ? 'audio' : 'video');
@@ -109,7 +132,7 @@ export function activeClipsAt(clips, time, kind = null) {
 
 export const LEGACY_TEXT_ID = 'legacy-title';
 
-export function createTextOverlay(id = makeId('text')) {
+export function createTextOverlay(id = makeId('text'), patch = {}) {
   return {
     id,
     text: 'Your text',
@@ -118,6 +141,36 @@ export function createTextOverlay(id = makeId('text')) {
     positionY: 50,
     opacity: 100,
     color: '#ffffff',
+    ...patch,
+  };
+}
+
+export function createTextClip(start = 0, track = 1, overlayPatch = {}, duration = 4) {
+  const overlay = createTextOverlay(makeId('text'), {
+    fontFamily: 'Geist',
+    fontWeight: 700,
+    backgroundEnabled: false,
+    shadow: true,
+    ...overlayPatch,
+  });
+  return {
+    id: makeId(),
+    assetId: null,
+    name: overlay.text.split('\n')[0].slice(0, 40) || 'Text',
+    kind: 'text',
+    start: Math.max(0, roundTime(start)),
+    track: clipTrack({ track }),
+    sourceStart: 0,
+    sourceEnd: roundTime(duration),
+    duration: roundTime(duration),
+    speed: 1,
+    fit: 'contain',
+    textOverlays: [overlay],
+    effects: defaultEffects(),
+    keyframes: {},
+    fadeIn: 0,
+    fadeOut: 0,
+    transition: { type: 'cut', duration: 0.6 },
   };
 }
 
@@ -188,6 +241,9 @@ export function createClip(media, start = 0, track = 0) {
       backgroundEnabled: true,
     },
     effects: defaultEffects(),
+    keyframes: {},
+    fadeIn: 0,
+    fadeOut: 0,
     transition: { type: 'cut', duration: 0.6 },
   };
 }
@@ -215,6 +271,7 @@ export function trimClip(clips, clipId, edge, amount) {
         start: roundTime(clip.start + removed),
         sourceStart: roundTime(clip.sourceStart + removed * (clip.speed || 1)),
         duration: roundTime(clip.duration - removed),
+        keyframes: shiftKeyframes(clip.keyframes, -removed),
       };
     }
     return {
@@ -227,13 +284,27 @@ export function trimClip(clips, clipId, edge, amount) {
 
 export function resizeClipEnd(clip, sourceDuration, requestedDelta) {
   const speed = clip.speed || 1;
-  const extensionLimit = clip.kind === 'image'
+  const extensionLimit = clip.kind === 'image' || clip.kind === 'text'
     ? Number.POSITIVE_INFINITY
     : Math.max(0, ((sourceDuration || clip.sourceEnd) - clip.sourceEnd) / speed);
   const added = Math.max(-(clip.duration - MIN_CLIP_DURATION), Math.min(extensionLimit, requestedDelta));
   return {
     sourceEnd: roundTime(clip.sourceEnd + added * speed),
     duration: roundTime(clip.duration + added),
+  };
+}
+
+export function trimClipStart(clip, requestedDelta) {
+  const speed = clip.speed || 1;
+  const sourceLimit = clip.kind === 'image' || clip.kind === 'text'
+    ? Number.POSITIVE_INFINITY
+    : clip.sourceStart / speed;
+  const removed = Math.max(-Math.min(sourceLimit, clip.start), Math.min(clip.duration - MIN_CLIP_DURATION, requestedDelta));
+  return {
+    start: roundTime(clip.start + removed),
+    sourceStart: roundTime(Math.max(0, clip.sourceStart + removed * speed)),
+    duration: roundTime(clip.duration - removed),
+    keyframes: shiftKeyframes(clip.keyframes, -removed),
   };
 }
 
@@ -249,20 +320,35 @@ export function splitClip(clips, clipId, time) {
   if (offset < MIN_CLIP_DURATION || offset > clip.duration - MIN_CLIP_DURATION) return clips;
 
   const sourceOffset = roundTime(offset * (clip.speed || 1));
+  const [firstKeys, secondKeys] = splitKeyframes(clip, offset);
   const first = {
-    ...clip,
+    ...structuredClone(clip),
     id: makeId(),
     sourceEnd: roundTime(clip.sourceStart + sourceOffset),
     duration: offset,
+    keyframes: firstKeys,
+    fadeOut: 0,
   };
   const second = {
-    ...clip,
+    ...structuredClone(clip),
     id: makeId(),
     start: roundTime(time),
     sourceStart: roundTime(clip.sourceStart + sourceOffset),
     duration: roundTime(clip.duration - offset),
+    keyframes: secondKeys,
+    fadeIn: 0,
+    transition: { ...(clip.transition || {}), type: 'cut' },
   };
   return [...clips.slice(0, index), first, second, ...clips.slice(index + 1)];
+}
+
+export function splitClipsAt(clips, time, clipIds = null) {
+  const targets = clips.filter((clip) => (
+    (!clipIds || clipIds.includes(clip.id))
+    && time > clip.start + MIN_CLIP_DURATION
+    && time < clip.start + clip.duration - MIN_CLIP_DURATION
+  ));
+  return targets.reduce((current, clip) => splitClip(current, clip.id, time), clips);
 }
 
 export function moveClip(clips, clipId, start, track = null) {
@@ -298,29 +384,46 @@ export function removeMediaFromProject(project, assetId) {
   };
 }
 
+function freshTextIds(clip) {
+  if (clip.kind !== 'text' && !(clip.textOverlays || []).length) return clip;
+  return {
+    ...clip,
+    textOverlays: (clip.textOverlays || []).map((text) => ({ ...text, id: makeId('text') })),
+  };
+}
+
 export function duplicateClip(clips, clipId) {
   const index = clips.findIndex((clip) => clip.id === clipId);
   if (index < 0) return clips;
   const source = clips[index];
-  const duplicate = {
-    ...source,
+  const duplicate = freshTextIds({
+    ...structuredClone(source),
     id: makeId(),
     start: roundTime(source.start + source.duration),
-    effects: { ...source.effects },
-    transition: { ...source.transition },
-    title: { ...source.title },
-    textOverlays: (source.textOverlays || []).map((text) => ({ ...text })),
-    transcript: { ...source.transcript },
-  };
+  });
+  duplicate.effects = duplicate.effects || defaultEffects();
   duplicate.effects.primaryWheels = Object.fromEntries(
     Object.entries(source.effects?.primaryWheels || defaultPrimaryWheels()).map(([key, value]) => [key, { ...value }]),
   );
   return [...clips.slice(0, index + 1), duplicate, ...clips.slice(index + 1)];
 }
 
+export function duplicateClips(clips, clipIds) {
+  const group = clips.filter((clip) => clipIds.includes(clip.id));
+  if (!group.length) return { clips, created: [] };
+  const groupStart = Math.min(...group.map((clip) => clip.start));
+  const groupEnd = Math.max(...group.map((clip) => clip.start + clip.duration));
+  const created = group.map((clip) => freshTextIds({
+    ...structuredClone(clip),
+    id: makeId(),
+    start: roundTime(groupEnd + (clip.start - groupStart)),
+  }));
+  return { clips: [...clips, ...created], created };
+}
+
 export function pasteClipAt(source, start) {
   if (!source) return null;
-  const pasted = structuredClone(source);
+  const pasted = freshTextIds(structuredClone(source));
   return {
     ...pasted,
     id: makeId(),
@@ -328,19 +431,139 @@ export function pasteClipAt(source, start) {
   };
 }
 
+export function pasteClipsAt(sources = [], start) {
+  if (!sources.length) return [];
+  const origin = Math.min(...sources.map((clip) => clip.start));
+  return sources.map((clip) => pasteClipAt(clip, start + (clip.start - origin)));
+}
+
 export function setClipSpeed(clip, requestedSpeed) {
   const speed = Math.min(4, Math.max(0.25, Number(requestedSpeed) || 1));
+  const previous = clip.speed || 1;
+  const factor = previous / speed;
   return {
     ...clip,
     speed,
     duration: roundTime((clip.sourceEnd - clip.sourceStart) / speed),
+    keyframes: scaleKeyframes(clip.keyframes, factor),
+    fadeIn: roundTime((clip.fadeIn || 0) * factor),
+    fadeOut: roundTime((clip.fadeOut || 0) * factor),
   };
+}
+
+export function moveClips(clips, clipIds, delta) {
+  const group = clips.filter((clip) => clipIds.includes(clip.id));
+  if (!group.length) return clips;
+  const earliest = Math.min(...group.map((clip) => clip.start));
+  const safeDelta = Math.max(-earliest, delta);
+  return clips.map((clip) => (
+    clipIds.includes(clip.id) ? { ...clip, start: roundTime(clip.start + safeDelta) } : clip
+  ));
+}
+
+function sameLane(a, b) {
+  return clipLaneKind(a) === clipLaneKind(b) && clipTrack(a) === clipTrack(b);
+}
+
+export function rippleDeleteClips(clips, clipIds) {
+  const removed = clips.filter((clip) => clipIds.includes(clip.id)).sort((a, b) => b.start - a.start);
+  let next = clips.filter((clip) => !clipIds.includes(clip.id));
+  for (const gone of removed) {
+    next = next.map((clip) => (
+      sameLane(clip, gone) && clip.start >= gone.start + gone.duration - 0.0005
+        ? { ...clip, start: roundTime(clip.start - gone.duration) }
+        : clip
+    ));
+  }
+  return next;
+}
+
+export function closeGapAt(clips, kind, track, time) {
+  const lane = clips
+    .filter((clip) => clipLaneKind(clip) === kind && clipTrack(clip) === track)
+    .sort((a, b) => a.start - b.start);
+  const next = lane.find((clip) => clip.start > time);
+  if (!next) return clips;
+  const previousEnd = lane
+    .filter((clip) => clip.start + clip.duration <= next.start + 0.0005 && clip.id !== next.id)
+    .reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
+  if (time < previousEnd - 0.0005) return clips;
+  const gap = roundTime(next.start - previousEnd);
+  if (gap <= 0) return clips;
+  return clips.map((clip) => (
+    clipLaneKind(clip) === kind && clipTrack(clip) === track && clip.start >= next.start - 0.0005
+      ? { ...clip, start: roundTime(clip.start - gap) }
+      : clip
+  ));
+}
+
+export function closeAllGaps(clips, kind, track) {
+  let cursor = 0;
+  const lane = clips
+    .filter((clip) => clipLaneKind(clip) === kind && clipTrack(clip) === track)
+    .sort((a, b) => a.start - b.start);
+  const positions = new Map();
+  for (const clip of lane) {
+    const start = Math.min(clip.start, cursor);
+    positions.set(clip.id, roundTime(start));
+    cursor = Math.max(cursor, start + clip.duration);
+  }
+  return clips.map((clip) => (positions.has(clip.id) ? { ...clip, start: positions.get(clip.id) } : clip));
+}
+
+export function editPoints(clips) {
+  const points = new Set([0]);
+  for (const clip of clips) {
+    points.add(roundTime(clip.start));
+    points.add(roundTime(clip.start + clip.duration));
+  }
+  return [...points].sort((a, b) => a - b);
+}
+
+export function adjacentEditPoint(clips, time, direction) {
+  const points = editPoints(clips);
+  if (direction < 0) return [...points].reverse().find((point) => point < time - 0.0005) ?? 0;
+  return points.find((point) => point > time + 0.0005) ?? points.at(-1) ?? 0;
+}
+
+export function detachAudio(clips, clipId, audioTrack = 0) {
+  const source = clips.find((clip) => clip.id === clipId);
+  if (!source || source.kind !== 'video') return { clips, audioClip: null };
+  const audioClip = {
+    ...structuredClone(source),
+    id: makeId(),
+    kind: 'audio',
+    track: clipTrack({ track: audioTrack }),
+    name: source.name,
+    textOverlays: [],
+    transition: { type: 'cut', duration: 0.6 },
+    detachedFrom: source.id,
+  };
+  return {
+    clips: [
+      ...clips.map((clip) => (clip.id === clipId ? { ...clip, muted: true } : clip)),
+      audioClip,
+    ],
+    audioClip,
+  };
+}
+
+export function freeLaneTrack(clips, kind, start, duration, preferred = 0, maxTrack = MAX_TRACK_INDEX) {
+  const end = start + duration;
+  for (let track = preferred; track <= maxTrack; track += 1) {
+    const busy = clips.some((clip) => (
+      clipLaneKind(clip) === kind && clipTrack(clip) === track
+      && clip.start < end - 0.0005 && clip.start + clip.duration > start + 0.0005
+    ));
+    if (!busy) return track;
+  }
+  return Math.min(maxTrack, preferred);
 }
 
 export function serializeProject(project) {
   return {
     ...project,
-    version: 1,
+    version: 2,
     media: project.media.map(({ src: _src, thumbnail: _thumbnail, ...item }) => item),
     clips: project.clips.map((clip) => {
       const customFont = clip.transcript?.customFont;
@@ -360,17 +583,19 @@ export function getTransitionProgress(clip, playhead) {
   return Math.min(1, Math.max(0, (playhead - clip.start) / Math.max(0.1, clip.transition.duration)));
 }
 
-export function timelineTimeFromPointer({ clientX, viewportLeft, scrollLeft, pixelsPerSecond, gutterWidth = 84 }) {
+export function timelineTimeFromPointer({ clientX, viewportLeft, scrollLeft, pixelsPerSecond, gutterWidth = TIMELINE_GUTTER }) {
   return Math.max(0, (clientX - viewportLeft + scrollLeft - gutterWidth) / pixelsPerSecond);
 }
 
-export function snapTimelineTime(value, clips, pixelsPerSecond, excludedClipId = null, enabled = true) {
+export function snapTimelineTime(value, clips, pixelsPerSecond, excludedClipId = null, enabled = true, extraPoints = []) {
   const safeValue = Math.max(0, value);
   if (!enabled) return safeValue;
+  const excluded = Array.isArray(excludedClipId) ? excludedClipId : [excludedClipId];
   const candidates = [
     0,
+    ...extraPoints.filter((point) => Number.isFinite(point)),
     ...clips
-      .filter((clip) => clip.id !== excludedClipId)
+      .filter((clip) => !excluded.includes(clip.id))
       .flatMap((clip) => [clip.start, clip.start + clip.duration]),
   ];
   const nearest = candidates.reduce((best, candidate) => (
@@ -379,9 +604,13 @@ export function snapTimelineTime(value, clips, pixelsPerSecond, excludedClipId =
   return Math.abs(nearest - safeValue) * pixelsPerSecond <= 6 ? nearest : safeValue;
 }
 
-export function timelineZoomForDuration(duration, viewportWidth, gutterWidth = 84) {
-  const timelineDuration = Math.max(30, Math.ceil(Math.max(0, Number(duration) || 0) + 8));
+export function timelineZoomForDuration(duration, viewportWidth, gutterWidth = TIMELINE_GUTTER) {
+  const timelineDuration = Math.max(10, Math.max(0, Number(duration) || 0) * 1.04 + 1);
   const availableWidth = Math.max(1, (Number(viewportWidth) || 0) - gutterWidth - 24);
   const zoom = availableWidth / (timelineDuration * 64);
-  return Math.min(2, Math.max(0.15, Math.round(zoom * 1000) / 1000));
+  return Math.min(MAX_TIMELINE_ZOOM, Math.max(MIN_TIMELINE_ZOOM, Math.round(zoom * 1000) / 1000));
+}
+
+export function timelineCanvasDuration(duration, viewportSeconds = 0) {
+  return Math.max(30, Math.ceil(Math.max(Number(duration) || 0, 0) + 10), Math.ceil(viewportSeconds));
 }

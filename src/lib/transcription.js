@@ -1,9 +1,12 @@
+import { fontStack } from './fonts.js';
+
 export function getSpeechRecognitionConstructor(runtime = globalThis) {
   return runtime?.SpeechRecognition || runtime?.webkitSpeechRecognition || null;
 }
 
 export const CAPTION_FONTS = [
   { family: 'Outfit', category: 'sans-serif' },
+  { family: 'Montserrat', category: 'sans-serif' },
   { family: 'Space Grotesk', category: 'sans-serif' },
   { family: 'DM Sans', category: 'sans-serif' },
   { family: 'Bebas Neue', category: 'sans-serif' },
@@ -11,18 +14,13 @@ export const CAPTION_FONTS = [
   { family: 'Oswald', category: 'sans-serif' },
   { family: 'Playfair Display', category: 'serif' },
   { family: 'Noto Sans', category: 'sans-serif' },
+  { family: 'Permanent Marker', category: 'cursive' },
 ];
 
-function quotedFontFamily(family) {
-  return `'${String(family || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
-}
-
 export function captionFontStack(requestedFamily, customFont = null) {
-  if (customFont?.src && customFont.family === requestedFamily) {
-    return `${quotedFontFamily(customFont.family)}, sans-serif`;
-  }
+  if (customFont?.src && customFont.family === requestedFamily) return fontStack(requestedFamily, customFont);
   const font = CAPTION_FONTS.find(({ family }) => family === requestedFamily) || CAPTION_FONTS[0];
-  return `'${font.family}', ${font.category}`;
+  return fontStack(font.family);
 }
 
 export async function loadCustomCaptionFont(customFont, {
@@ -56,6 +54,17 @@ export function activeTranscriptWord(words = [], localClipTime = 0, speed = 1) {
   return sourceTime < cutoff ? String(active.text || '').trim() : '';
 }
 
+export function activeTranscriptWordStart(words = [], localClipTime = 0, speed = 1) {
+  if (!Array.isArray(words) || !words.length || localClipTime < 0) return null;
+  const sourceTime = localClipTime * Math.max(0.01, Number(speed) || 1);
+  let active = null;
+  for (const word of words) {
+    if (Number(word?.start) <= sourceTime) active = word;
+    else break;
+  }
+  return active ? Number(active.start) / Math.max(0.01, Number(speed) || 1) : null;
+}
+
 export function captionTextForClip(clip, timelineTime) {
   const transcript = clip?.transcript;
   if (!transcript?.showAsCaptions || !transcript.text) return '';
@@ -85,7 +94,7 @@ export function clipTranscriptionStatusMessage(stage, progress = 0) {
   if (stage === 'extracting') return 'Reading the selected clip’s audio…';
   if (stage === 'loading-model') return `Downloading the local speech model… ${Math.round(Math.max(0, Math.min(1, progress)) * 100)}%`;
   if (stage === 'transcribing') return 'Turning this clip’s speech into text…';
-  if (stage === 'complete') return 'Transcript ready — you can edit it below.';
+  if (stage === 'complete') return 'Transcript ready. You can edit it below.';
   return 'Transcribe the speech already inside this selected clip.';
 }
 

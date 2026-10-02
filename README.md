@@ -1,43 +1,53 @@
 # Pixelwave
 
-Pixelwave is a desktop video editor built with Electron and React. It focuses on a fast, tactile editing workflow with a layered timeline, direct preview controls, local media processing, and a polished liquid-glass interface.
+Pixelwave is a desktop video editor built with Electron and React. It aims to be the editor you reach for when OpenShot feels clunky: a clear layout, a fast timeline, and the effects creators actually use, all processed locally.
 
-## Highlights
+## What you get
 
-- Import video, audio, and still images, including MP4 and MOV sources
-- Automatic MP4 proxy generation when Electron cannot decode an imported video directly
-- Multi-layer video and audio timeline with smooth scrubbing and snapping
-- Frame-accurate keyboard navigation, clip nudging, and internal copy/paste
-- Fit-sequence and center-playhead timeline controls
-- Move, trim, split, duplicate, reorder, and change clip playback speed
-- Directly position and scale clips in the program monitor
-- Multiple editable text overlays with custom fonts, backgrounds, and placement controls
-- Clip transcription and word-timed caption styling
-- Built-in voice recording for narration and voice-over takes
-- Color workspace with presets and manual grading controls
-- Entry transitions, opacity, audio, transform, and visual effect controls
-- MP4, MOV, and WebM export through the bundled FFmpeg pipeline
-- Project save/open, undo/redo, searchable media pool, and media actions
+**Editing**
+- Multi-track timeline (up to 6 video and 6 audio tracks) with move, trim, split, blade tool, ripple delete, close gaps, multi-select, marquee select, copy, cut, paste and duplicate
+- Snapping to clip edges, the playhead, markers and in/out points
+- Markers with names and colors, in and out points, loop playback
+- Track mute, hide and lock, plus detach audio from a video clip
+- Audio waveforms and video filmstrips right on the clips, drag-to-fade handles, zoom with Ctrl/Cmd + scroll
+- Frame stepping, J/K/L shuttle, jump between cuts and markers, type a time to jump anywhere
+- Undo and redo for everything, with named steps ("Undo split")
 
-## Tech stack
+**Looks and motion**
+- Keyframes on position, scale, rotation, opacity, volume and blur, with easing, plus one-click animations (pop in, slide, spin, slow zoom, pan, exits and more)
+- Quick layouts for picture-in-picture and split screen, crop, rounded corners, drop shadow
+- Green and blue screen keying with softness and spill control
+- Eight transitions, fade in and out on any clip
+- Color looks, lift/gamma/gain wheels, exposure, contrast, saturation, temperature, tint, hue, invert, blur and vignette
 
-- Electron
-- React 19
-- Vite
-- FFmpeg
-- Hugging Face Transformers for local transcription
-- Vitest
+**Titles and captions**
+- Standalone text clips with ten ready-made styles, 14 bundled fonts, outline, glow, shadow, background box, and in and out animations
+- Type directly on the monitor, drag, resize and rotate with handles
+- Local speech to text with word-by-word captions
+- Solid color and gradient backgrounds
+
+**Formats and export**
+- Vertical, square, portrait, cinematic, 1080p and 4K canvases, 24 to 60 fps
+- Export MP4, MOV, WebM, GIF, MP3 or WAV with size, quality, frame rate and in/out range options
+- Save any frame as a PNG
+- The monitor and the exporter share one renderer, so what you see is what you get
+
+**Everything else**
+- Drop files from your computer onto the window or straight onto a track
+- Command palette (Ctrl/Cmd + K) for every action, and a shortcut guide (`?`)
+- Autosave with crash recovery, recent projects, unsaved-changes prompt
+- Voiceover recording with a live level meter
 
 ## Getting started
 
-Pixelwave is currently developed and tested on macOS. Install a recent Node.js release (Node 20.19+ or 22.12+ is recommended), then run:
+Pixelwave is developed and tested on macOS and Linux. Install a recent Node.js release (Node 20.19+ or 22.12+), then run:
 
 ```bash
 npm install
 npm run dev
 ```
 
-The development command starts Vite and opens the Electron desktop window automatically.
+The dev command starts Vite and opens the Electron window.
 
 To run the production build locally:
 
@@ -45,8 +55,6 @@ To run the production build locally:
 npm run build
 npm start
 ```
-
-## Available commands
 
 | Command | Purpose |
 | --- | --- |
@@ -56,24 +64,33 @@ npm start
 | `npm test` | Run the Vitest suite in watch mode |
 | `npm run check` | Run all tests once and create a production build |
 
-## Basic workflow
+## A quick tour
 
-1. Import video, audio, or images from the Media panel.
-2. Double-click an asset or drag it onto the timeline.
-3. Trim and arrange clips across layers, then use the Inspector for timing, transitions, effects, captions, and color.
-4. Add text or record a voice-over from the top toolbar.
-5. Choose MP4, MOV, or WebM and export the finished timeline.
+1. Pick a canvas shape on the start screen (or any time from the format button above the monitor).
+2. Import media with `Ctrl/Cmd + I`, or drop files anywhere in the window.
+3. Drag clips from the library onto a track. Double-click a clip to add it at the end.
+4. Select a clip and use the inspector: Edit for layout, effects, fades and speed, Animate for keyframes and one-click motion, Color for looks and wheels, Captions for speech to text.
+5. Add titles from the Text tab in the library, then type right on the monitor.
+6. Press `Ctrl/Cmd + E` to export.
 
-The three-dot menu on each media item can append it to the timeline, reveal the source in Finder, or remove it and its linked timeline instances from the project. Removal is recorded in project history, so it can be undone.
+Press `?` for every keyboard shortcut, or `Ctrl/Cmd + K` to search actions by name.
 
-Press `?` inside the editor to open the keyboard shortcut guide. Arrow keys step through frames, Shift+Arrow moves by one second, Option/Alt+Arrow nudges the selected clip, and Cmd/Ctrl+C and Cmd/Ctrl+V copy and paste clips at the playhead.
+## How it is built
+
+- `src/lib/compositor.js` draws one frame of the timeline to a canvas. The live monitor and the exporter both call it.
+- `src/lib/animation.js` holds keyframes, easing, fades and the motion presets. `src/lib/text.js` holds text styling, layout and text animation.
+- `src/lib/editor.js` and `src/lib/project.js` are pure, tested functions for every timeline edit and the project format. Older version 1 projects are upgraded on open.
+- `src/hooks/useProjectHistory.js` owns the project and its undo stack.
+- Electron's main process streams raw frames to FFmpeg for encoding. Fonts are bundled, so text looks the same on screen and in the exported file.
+
+Plans for earlier milestones live in `docs/plans/`.
 
 ## Media notes
 
-Pixelwave accepts common desktop formats including MP4, MOV, M4V, WebM, AVI, MKV, MP3, WAV, M4A, AAC, OGG, PNG, JPEG, WebP, and GIF. If Chromium cannot decode an imported video, Pixelwave uses its bundled FFmpeg binary to create an H.264/AAC MP4 proxy.
+Pixelwave accepts MP4, MOV, M4V, WebM, AVI, MKV, MP3, WAV, M4A, AAC, OGG, FLAC, Opus, PNG, JPEG, WebP and GIF. If Chromium cannot decode a video, Pixelwave uses the bundled FFmpeg to make an H.264/AAC proxy.
 
-Transcription runs locally. The first transcription may take longer while the speech model is prepared and cached.
+Transcription runs locally. The first run downloads and caches the speech model.
 
 ## Project status
 
-Pixelwave is under active development. The editor is functional, but packaging, platform testing, performance work, and additional editing tools are still in progress.
+Pixelwave is under active development. The interface is dark only, because a neutral dim surround keeps color judgement honest.

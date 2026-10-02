@@ -102,7 +102,8 @@ describe('editor timeline model', () => {
     expect(clip.track).toBe(2);
     expect(moved).toMatchObject({ start: 4.25, track: 1 });
     expect(clipTrack({ track: -4 })).toBe(0);
-    expect(clipTrack({ track: 2.7 })).toBe(2);
+    expect(clipTrack({ track: 2.7 })).toBe(3);
+    expect(clipTrack({ track: 9 })).toBe(editor.MAX_TRACK_INDEX);
   });
 
   it('uses a five second duration for still images', () => {
@@ -213,7 +214,7 @@ describe('editor timeline model', () => {
       family: 'Pixelwave Custom Studio Sans',
       path: '/tmp/Studio Sans.ttf',
     });
-    expect(data.version).toBe(1);
+    expect(data.version).toBe(2);
   });
 
   it('treats an empty preview as transition-complete', () => {
@@ -392,8 +393,89 @@ describe('editor timeline model', () => {
   });
 
   it('calculates a clamped timeline zoom that fits the sequence viewport', () => {
-    expect(editor.timelineZoomForDuration(10, 1000)).toBeCloseTo(0.465, 3);
-    expect(editor.timelineZoomForDuration(120, 1000)).toBe(0.15);
-    expect(editor.timelineZoomForDuration(1, 10000)).toBe(2);
+    expect(editor.timelineZoomForDuration(10, 1000)).toBeCloseTo(1.135, 3);
+    expect(editor.timelineZoomForDuration(120, 1000)).toBeCloseTo(0.103, 3);
+    expect(editor.timelineZoomForDuration(1, 10000)).toBe(editor.MAX_TIMELINE_ZOOM);
+    expect(editor.timelineZoomForDuration(100000, 1000)).toBe(editor.MIN_TIMELINE_ZOOM);
+  });
+});
+
+describe('timeline editing operations', () => {
+  const lane = (id, start, duration, extra = {}) => ({ id, kind: 'video', track: 0, start, duration, sourceStart: 0, sourceEnd: duration, speed: 1, ...extra });
+
+  it('builds lanes for any number of video and audio tracks', () => {
+    expect(editor.timelineTracks({ video: 2, audio: 4 }).map((track) => track.label)).toEqual(['V2', 'V1', 'A1', 'A2', 'A3', 'A4']);
+  });
+
+  it('creates standalone text clips that need no media', () => {
+    const clip = editor.createTextClip(3, 1, { text: 'Hello\nworld', fontSize: 80 });
+    expect(clip).toMatchObject({ kind: 'text', assetId: null, start: 3, track: 1, duration: 4, name: 'Hello' });
+    expect(clip.textOverlays[0]).toMatchObject({ text: 'Hello\nworld', fontSize: 80, backgroundEnabled: false });
+    expect(resizeClipEnd(clip, 0, 6).duration).toBe(10);
+  });
+
+  it('only plays an entry transition on the first half of a split clip', () => {
+    const clip = { ...createClip(video, 0), transition: { type: 'dissolve', duration: 1 }, fadeIn: 1, fadeOut: 2 };
+    const [first, second] = splitClip([clip], clip.id, 5);
+    expect(first).toMatchObject({ transition: { type: 'dissolve' }, fadeIn: 1, fadeOut: 0 });
+    expect(second).toMatchObject({ transition: { type: 'cut' }, fadeIn: 0, fadeOut: 2 });
+  });
+
+  it('splits every clip under the playhead or only the chosen ones', () => {
+    const clips = [lane('a', 0, 4), { ...lane('b', 1, 4), kind: 'audio' }, lane('c', 6, 2)];
+    expect(editor.splitClipsAt(clips, 2)).toHaveLength(5);
+    expect(editor.splitClipsAt(clips, 2, ['b'])).toHaveLength(4);
+  });
+
+  it('keeps keyframes attached to the picture when trimming or changing speed', () => {
+    const clip = { ...createClip(video, 0), keyframes: { scale: [{ time: 4, value: 150, easing: 'ease' }] } };
+    const [trimmed] = trimClip([clip], clip.id, 'start', 1);
+    expect(trimmed.keyframes.scale[0].time).toBe(3);
+    expect(editor.trimClipStart(clip, 1)).toMatchObject({ start: 1, sourceStart: 1, duration: 11 });
+    const faster = editor.setClipSpeed({ ...clip, fadeIn: 2 }, 2);
+    expect(faster.keyframes.scale[0].time).toBe(2);
+    expect(faster.fadeIn).toBe(1);
+  });
+
+  it('ripple deletes and closes gaps on the same lane only', () => {
+    const clips = [lane('a', 0, 2), lane('b', 2, 3), lane('c', 5, 1), { ...lane('m', 3, 4), kind: 'audio' }];
+    const rippled = editor.rippleDeleteClips(clips, ['b']);
+    expect(rippled.map((clip) => [clip.id, clip.start])).toEqual([['a', 0], ['c', 2], ['m', 3]]);
+    const gapped = [lane('a', 0, 2), lane('b', 5, 1), lane('c', 7, 1)];
+    expect(editor.closeGapAt(gapped, 'video', 0, 3).map((clip) => clip.start)).toEqual([0, 2, 4]);
+    expect(editor.closeGapAt(gapped, 'video', 0, 1)).toBe(gapped);
+    expect(editor.closeAllGaps(gapped, 'video', 0).map((clip) => clip.start)).toEqual([0, 2, 3]);
+  });
+
+  it('moves, duplicates and pastes groups while keeping their spacing', () => {
+    const clips = [lane('a', 2, 1), lane('b', 4, 2), lane('c', 10, 1)];
+    expect(editor.moveClips(clips, ['a', 'b'], -5).map((clip) => clip.start)).toEqual([0, 2, 10]);
+    const { created } = editor.duplicateClips(clips, ['a', 'b']);
+    expect(created.map((clip) => clip.start)).toEqual([6, 8]);
+    expect(editor.pasteClipsAt([clips[0], clips[1]], 20).map((clip) => clip.start)).toEqual([20, 22]);
+  });
+
+  it('jumps between edit points', () => {
+    const clips = [lane('a', 0, 2), lane('b', 3, 2)];
+    expect(editor.adjacentEditPoint(clips, 2.5, 1)).toBe(3);
+    expect(editor.adjacentEditPoint(clips, 2.5, -1)).toBe(2);
+    expect(editor.adjacentEditPoint(clips, 5, 1)).toBe(5);
+  });
+
+  it('detaches audio into a linked audio clip and mutes the picture', () => {
+    const clip = createClip(video, 1);
+    const { clips, audioClip } = editor.detachAudio([clip], clip.id, 1);
+    expect(clips[0].muted).toBe(true);
+    expect(audioClip).toMatchObject({ kind: 'audio', track: 1, assetId: video.id, start: 1, detachedFrom: clip.id });
+  });
+
+  it('finds a free lane for new overlays', () => {
+    const clips = [lane('a', 0, 5), lane('b', 0, 5, { track: 1 })];
+    expect(editor.freeLaneTrack(clips, 'video', 2, 2, 1)).toBe(2);
+    expect(editor.freeLaneTrack(clips, 'video', 6, 2, 1)).toBe(1);
+  });
+
+  it('snaps to extra points such as the playhead and markers', () => {
+    expect(editor.snapTimelineTime(2.95, [], 64, null, true, [3])).toBe(3);
   });
 });

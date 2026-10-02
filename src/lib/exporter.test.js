@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildRenderPlan, canvasFilter } from './exporter.js';
 import * as exporter from './exporter.js';
+import { createProject } from './project.js';
 
 describe('export planning', () => {
   it('sorts clips into render order and calculates the full sequence duration', () => {
-    const plan = buildRenderPlan([
+    const plan = exporter.buildRenderPlan([
       { id: 'late', start: 8, duration: 3 },
       { id: 'early', start: 1, duration: 2 },
     ]);
@@ -13,7 +13,7 @@ describe('export planning', () => {
   });
 
   it('orders simultaneous clips from the base layer to the top layer', () => {
-    const plan = buildRenderPlan([
+    const plan = exporter.buildRenderPlan([
       { id: 'top', kind: 'video', track: 2, start: 0, duration: 4 },
       { id: 'base', kind: 'video', track: 0, start: 0, duration: 4 },
       { id: 'middle', kind: 'video', track: 1, start: 0, duration: 4 },
@@ -24,60 +24,35 @@ describe('export planning', () => {
   it('plans one deterministic render timestamp per output frame', () => {
     expect(exporter.exportFrameTimes(0.1, 30)).toEqual([0, 0.033333, 0.066667]);
     expect(exporter.exportFrameTimes(1, 2)).toEqual([0, 0.5]);
+    expect(exporter.exportFrameTimes(1, 2, 3)).toEqual([3, 3.5]);
   });
 
-  it('maps editor color controls to a canvas filter', () => {
-    expect(canvasFilter({ exposure: 12, contrast: 93, saturation: 121, temperature: 20, tint: 10, blur: 2 }))
-      .toBe('brightness(112%) contrast(93%) saturate(121%) sepia(4%) hue-rotate(2.5deg) blur(2px)');
+  it('clamps export ranges to the timeline', () => {
+    const project = createProject({ clips: [{ id: 'a', start: 0, duration: 10 }] });
+    expect(exporter.exportRange(project)).toEqual({ start: 0, end: 10, duration: 10 });
+    expect(exporter.exportRange(project, { start: 2, end: 40 })).toEqual({ start: 2, end: 10, duration: 8 });
   });
 
-  it('places titles using both horizontal and vertical percentages', () => {
-    expect(exporter.titleCanvasPosition({ positionX: 24, positionY: 66 }, { width: 1280, height: 720 }))
-      .toEqual({ x: 307.2, y: 475.2 });
+  it('offers output sizes by the short side for any canvas shape', () => {
+    const vertical = exporter.exportResolutions({ width: 1080, height: 1920 });
+    expect(vertical.find((option) => option.native)).toMatchObject({ label: '1080p', width: 1080, height: 1920 });
+    expect(vertical.find((option) => option.id === '720')).toMatchObject({ width: 720, height: 1280 });
+    const odd = exporter.exportResolutions({ width: 1000, height: 750 });
+    expect(odd.every((option) => option.width % 2 === 0 && option.height % 2 === 0)).toBe(true);
   });
 
-  it('exports every text overlay while keeping legacy clip titles', () => {
-    expect(exporter.exportTextOverlays({
-      title: { text: 'Legacy title' },
-      textOverlays: [
-        { id: 'first', text: 'First overlay' },
-        { id: 'second', text: 'Second overlay' },
-      ],
-    }).map((text) => text.text)).toEqual([
-      'Legacy title',
-      'First overlay',
-      'Second overlay',
-    ]);
-  });
-
-  it('wraps a transcript into centered export caption lines', () => {
-    const context = { measureText: (text) => ({ width: text.length * 10 }) };
-    expect(exporter.captionLines(context, 'Build something worth watching today', 110)).toEqual([
-      'Build',
-      'something',
-      'worth…',
-    ]);
-  });
-
-  it('keeps custom fonts and transparent caption boxes in the export style', () => {
-    expect(exporter.captionRenderStyle({
-      fontFamily: 'Pixelwave Custom Studio Sans',
-      customFont: {
-        family: 'Pixelwave Custom Studio Sans',
-        src: 'pixelwave-media://local/font',
-      },
-      backgroundEnabled: false,
-    })).toEqual({
-      drawBackground: false,
-      fontStack: "'Pixelwave Custom Studio Sans', sans-serif",
-    });
-  });
-
-  it('describes supported WebM, MP4, and MOV output profiles', () => {
-    expect(exporter.exportProfile('webm')).toMatchObject({ extension: 'webm', label: 'WebM' });
-    expect(exporter.exportProfile('mp4')).toMatchObject({ extension: 'mp4', label: 'MP4 · H.264' });
-    expect(exporter.exportProfile('mov')).toMatchObject({ extension: 'mov', label: 'MOV · H.264' });
+  it('describes video, GIF and audio output formats', () => {
+    expect(exporter.exportProfile('webm')).toMatchObject({ extension: 'webm', kind: 'video' });
+    expect(exporter.exportProfile('gif')).toMatchObject({ kind: 'gif' });
+    expect(exporter.exportProfile('mp3')).toMatchObject({ kind: 'audio' });
     expect(exporter.exportProfile('avi')).toBeNull();
+    expect(exporter.exportQuality('nope').id).toBe('standard');
   });
 
+  it('collects the fonts a project needs before rendering', () => {
+    const fonts = exporter.projectFontRequests({
+      clips: [{ kind: 'text', textOverlays: [{ text: 'Hi', fontFamily: 'Anton' }] }, { transcript: { text: 'hey', fontFamily: 'Oswald' } }],
+    });
+    expect(fonts).toEqual(["400 48px 'Anton', 'Anton', sans-serif", "700 48px 'Oswald Variable', 'Oswald', sans-serif"]);
+  });
 });

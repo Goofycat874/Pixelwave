@@ -1,0 +1,15 @@
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import '@fontsource-variable/montserrat';
+import '@fontsource-variable/outfit';
+import '@fontsource-variable/dm-sans';
+import '@fontsource-variable/space-grotesk';
+import '@fontsource-variable/noto-sans';
+import '@fontsource-variable/oswald';
+import '@fontsource-variable/playfair-display';
+import '@fontsource-variable/caveat';
+import '@fontsource/anton';
+import '@fontsource/bebas-neue';
+import '@fontsource/archivo-black';
+import '@fontsource/permanent-marker';
+import '@fontsource/pacifico';

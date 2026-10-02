@@ -1,17 +1,43 @@
+import { clipVolumeAt, hasKeyframes } from './animation.js';
+import { isClipMuted } from './project.js';
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function clipAudioSchedule(clip = {}) {
+export function clipAudioSchedule(clip = {}, range = null) {
   const playbackRate = clamp(Number(clip.speed) || 1, 0.25, 4);
-  const available = Math.max(0, (Number(clip.sourceEnd) || 0) - (Number(clip.sourceStart) || 0));
+  const clipStart = Math.max(0, Number(clip.start) || 0);
+  const clipDuration = Math.max(0, Number(clip.duration) || 0);
+  const rangeStart = Math.max(0, Number(range?.start) || 0);
+  const rangeEnd = Number.isFinite(Number(range?.end)) ? Number(range.end) : Number.POSITIVE_INFINITY;
+  const visibleStart = Math.max(clipStart, rangeStart);
+  const visibleEnd = Math.min(clipStart + clipDuration, rangeEnd);
+  const skipped = Math.max(0, visibleStart - clipStart);
+  const available = Math.max(0, (Number(clip.sourceEnd) || 0) - (Number(clip.sourceStart) || 0) - skipped * playbackRate);
   return {
-    when: Math.max(0, Number(clip.start) || 0),
-    offset: Math.max(0, Number(clip.sourceStart) || 0),
-    sourceDuration: Math.min(available, Math.max(0, Number(clip.duration) || 0) * playbackRate),
+    when: Math.max(0, visibleStart - rangeStart),
+    offset: Math.max(0, (Number(clip.sourceStart) || 0) + skipped * playbackRate),
+    sourceDuration: Math.min(available, Math.max(0, visibleEnd - visibleStart) * playbackRate),
     playbackRate,
     gain: clamp((clip.effects?.volume ?? 100) / 100, 0, 1.5),
+    localStart: skipped,
   };
+}
+
+export function clipNeedsGainCurve(clip = {}) {
+  return (Number(clip.fadeIn) || 0) > 0 || (Number(clip.fadeOut) || 0) > 0 || hasKeyframes(clip, 'volume');
+}
+
+// Samples volume keyframes and fades so Web Audio can follow them exactly.
+export function clipGainCurve(clip, localStart, timelineDuration, samplesPerSecond = 120) {
+  const count = Math.max(2, Math.ceil(timelineDuration * samplesPerSecond) + 1);
+  const curve = new Float32Array(count);
+  for (let index = 0; index < count; index += 1) {
+    const local = localStart + (index / (count - 1)) * timelineDuration;
+    curve[index] = clamp(clipVolumeAt(clip, local), 0, 1.5);
+  }
+  return curve;
 }
 
 export function audioRenderDuration(project = {}) {
@@ -58,10 +84,16 @@ export function audioBufferToWav(audioBuffer) {
   return buffer;
 }
 
-export async function renderTimelineAudio(project) {
-  const clips = (project.clips || []).filter((clip) => clip.kind !== 'image' && (clip.effects?.volume ?? 100) > 0);
-  if (!clips.length) return null;
-  const duration = audioRenderDuration(project);
+export async function renderTimelineAudio(project, range = null) {
+  const start = Math.max(0, Number(range?.start) || 0);
+  const end = Number.isFinite(Number(range?.end)) ? Number(range.end) : audioRenderDuration(project);
+  const duration = Math.max(0, end - start);
+  const clips = (project.clips || []).filter((clip) => (
+    (clip.kind === 'video' || clip.kind === 'audio')
+    && !isClipMuted(project, clip)
+    && clip.start < end && clip.start + clip.duration > start
+  ));
+  if (!clips.length || duration <= 0) return null;
   const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (!OfflineContext) throw new Error('This system cannot render timeline audio for export.');
   const sampleRate = 48_000;
@@ -80,6 +112,7 @@ export async function renderTimelineAudio(project) {
     return decodedByAsset.get(asset.id);
   }
 
+  let scheduled = 0;
   for (const clip of clips) {
     const asset = assetById.get(clip.assetId);
     if (!asset) throw new Error(`Missing media for ${clip.name}.`);
@@ -90,17 +123,23 @@ export async function renderTimelineAudio(project) {
       if (asset.kind === 'video') continue;
       throw error;
     }
-    const schedule = clipAudioSchedule(clip);
+    const schedule = clipAudioSchedule(clip, { start, end });
     const sourceDuration = Math.min(schedule.sourceDuration, Math.max(0, buffer.duration - schedule.offset));
     if (sourceDuration <= 0) continue;
     const source = context.createBufferSource();
     const gain = context.createGain();
     source.buffer = buffer;
     source.playbackRate.value = schedule.playbackRate;
-    gain.gain.value = schedule.gain;
+    const timelineSpan = sourceDuration / schedule.playbackRate;
+    if (clipNeedsGainCurve(clip)) {
+      gain.gain.setValueCurveAtTime(clipGainCurve(clip, schedule.localStart, timelineSpan), schedule.when, Math.max(0.01, timelineSpan));
+    } else {
+      gain.gain.value = schedule.gain;
+    }
     source.connect(gain).connect(context.destination);
     source.start(schedule.when, schedule.offset, sourceDuration);
+    scheduled += 1;
   }
-
+  if (!scheduled) return null;
   return audioBufferToWav(await context.startRendering());
 }

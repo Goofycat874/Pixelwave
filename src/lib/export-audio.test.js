@@ -31,7 +31,27 @@ describe('timeline audio export', () => {
       sourceDuration: 8,
       playbackRate: 2,
       gain: 0.75,
+      localStart: 0,
     });
+  });
+
+  it('schedules only the part of a clip inside an export range', () => {
+    expect(audioExport.clipAudioSchedule({
+      start: 3,
+      duration: 4,
+      sourceStart: 2,
+      sourceEnd: 10,
+      speed: 2,
+      effects: { volume: 100 },
+    }, { start: 4, end: 6 })).toMatchObject({ when: 0, offset: 4, sourceDuration: 4, localStart: 1 });
+  });
+
+  it('samples fades and volume keyframes into a gain curve', () => {
+    const clip = { duration: 2, fadeIn: 1, effects: { volume: 50 }, keyframes: {} };
+    expect(audioExport.clipNeedsGainCurve(clip)).toBe(true);
+    expect(audioExport.clipNeedsGainCurve({ effects: { volume: 50 } })).toBe(false);
+    const curve = audioExport.clipGainCurve(clip, 0, 2, 2);
+    expect(Array.from(curve)).toEqual([0, 0.25, 0.5, 0.5, 0.5]);
   });
 
   it('serializes stereo samples as a valid 16-bit PCM WAV file', () => {

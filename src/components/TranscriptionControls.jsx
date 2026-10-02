@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle, Sparkle, TrashSimple, UploadSimple, Waveform } from '@phosphor-icons/react';
+import { CheckCircle, SpinnerGap, TrashSimple, UploadSimple, Waveform } from '@phosphor-icons/react';
 import {
   buildClipTranscriptionRequest,
   CAPTION_FONTS,
@@ -9,6 +9,7 @@ import {
   loadCustomCaptionFont,
 } from '../lib/transcription.js';
 import { formatTime } from '../lib/media.js';
+import { Button, ColorField, PropertyRow, Section, SelectField, Switch } from './ui.jsx';
 
 const languages = [
   ['en-US', 'English (US)'],
@@ -30,7 +31,7 @@ function countWords(text) {
   return String(text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
-export default function TranscriptionControls({ clip, asset, onUpdate }) {
+export default function TranscriptionControls({ clip, asset, onUpdate, onLiveUpdate = onUpdate, onBeginEdit = () => {}, defaultPositionY = 86 }) {
   const transcript = useMemo(() => ({
     text: '',
     words: [],
@@ -51,7 +52,6 @@ export default function TranscriptionControls({ clip, asset, onUpdate }) {
   const activeRequestRef = useRef(null);
   const canTranscribe = Boolean(asset?.path && window.pixelwave?.transcribeClip);
   const wordCount = transcript.words?.length || countWords(transcript.text);
-  const sampleWord = transcript.words?.[0]?.text || transcript.text.trim().split(/\s+/)[0] || 'Your words';
 
   useEffect(() => {
     const unsubscribe = window.pixelwave?.onTranscriptionProgress?.((nextStatus) => {
@@ -69,6 +69,7 @@ export default function TranscriptionControls({ clip, asset, onUpdate }) {
   }, [clip.id]);
 
   const patchTranscript = (patch) => onUpdate({ transcript: { ...transcript, ...patch } });
+  const liveTranscript = (patch) => onLiveUpdate({ transcript: { ...transcript, ...patch } });
 
   const transcribeSelectedClip = async () => {
     if (!canTranscribe || processing) return;
@@ -113,135 +114,73 @@ export default function TranscriptionControls({ clip, asset, onUpdate }) {
     }
   };
 
+  const fontOptions = [
+    ...CAPTION_FONTS.map(({ family }) => [family, family]),
+    ...(transcript.customFont ? [[transcript.customFont.family, transcript.customFont.name || 'Custom font']] : []),
+  ];
+
   return (
-    <div className="transcription-workspace">
-      <section className="transcription-hero">
-        <div className="transcription-hero__icon"><Waveform size={18} weight="duotone" /></div>
-        <div className="transcription-hero__copy">
-          <span>Local Whisper</span>
-          <h3>Speech to captions</h3>
-          <p>{formatTime(clip.duration)} clip · {wordCount || 0} {wordCount === 1 ? 'word' : 'words'}</p>
-        </div>
-        <button type="button" disabled={!canTranscribe || processing} onClick={transcribeSelectedClip}>
-          {processing ? <Sparkle size={13} weight="fill" /> : transcript.words?.length ? <CheckCircle size={13} weight="fill" /> : <Waveform size={13} weight="bold" />}
-          {processing ? 'Working' : transcript.text ? 'Again' : 'Transcribe'}
-        </button>
-      </section>
-
-      <section className="transcription-workspace__section transcription-workspace__section--status">
-        <div className={`transcription-status ${processing ? 'is-processing' : status.stage === 'complete' ? 'is-complete' : ''}`}>
-          <span className="transcription-status__dot" />
-          <p>{clipTranscriptionStatusMessage(status.stage, status.progress)}</p>
-          <strong>{processing ? `${Math.round(status.progress * 100)}%` : transcript.words?.length ? `${transcript.words.length} timed` : ''}</strong>
-        </div>
-        {processing && (
-          <div className="transcription-progress" aria-label="Transcription progress">
-            <span style={{ transform: `scaleX(${Math.max(0.03, status.progress)})` }} />
+    <div className="captions-panel">
+      <Section id="captions-transcribe" title="Auto captions">
+        <div className="transcribe-card">
+          <div className="transcribe-card__text">
+            <strong>Speech to text</strong>
+            <span>Runs on this computer. {formatTime(clip.duration)} of audio, {wordCount} {wordCount === 1 ? 'word' : 'words'} so far.</span>
           </div>
-        )}
-        {error && <p className="transcription-error" role="alert">{error}</p>}
-        {!canTranscribe && <p className="transcription-error">The original media file is not available for this clip.</p>}
-      </section>
-
-      <section className="transcription-workspace__section">
-        <div className="transcription-section-heading">
-          <div><strong>Transcript</strong><span>{transcript.words?.length ? 'Word timing ready' : 'Editable text'}</span></div>
-          <button
-            type="button"
-            disabled={!transcript.text || processing}
-            onClick={() => {
-              patchTranscript({ text: '', words: [] });
-              setStatus({ stage: 'idle', progress: 0 });
-            }}
-          ><TrashSimple size={12} /> Clear</button>
+          <Button variant="primary" size="sm" disabled={!canTranscribe || processing} onClick={transcribeSelectedClip}>
+            {processing ? <SpinnerGap size={14} className="spin" /> : transcript.words?.length ? <CheckCircle size={14} /> : <Waveform size={14} />}
+            {processing ? 'Working' : transcript.text ? 'Redo' : 'Transcribe'}
+          </Button>
         </div>
-        <label className="inspector-field">
-          <span>Spoken language</span>
-          <select value={transcript.language} disabled={processing} onChange={(event) => patchTranscript({ language: event.target.value })}>
-            {languages.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </label>
-        <label className="inspector-field transcript-editor">
-          <span><span>Words</span><output>{countWords(transcript.text)}</output></span>
+        <p className={`status-line ${processing ? 'is-busy' : status.stage === 'complete' ? 'is-done' : ''}`}>
+          {clipTranscriptionStatusMessage(status.stage, status.progress)}
+        </p>
+        {processing && <div className="progress"><span style={{ transform: `scaleX(${Math.max(0.03, status.progress)})` }} /></div>}
+        {error && <p className="error-text" role="alert">{error}</p>}
+        {!canTranscribe && <p className="hint">The original media file for this clip is not available, so it cannot be transcribed.</p>}
+        <SelectField label="Language" value={transcript.language} options={languages} onChange={(language) => patchTranscript({ language })} />
+      </Section>
+
+      <Section
+        id="captions-text"
+        title="Transcript"
+        actions={transcript.text ? (
+          <button type="button" className="link-btn" disabled={processing} onClick={() => { patchTranscript({ text: '', words: [] }); setStatus({ stage: 'idle', progress: 0 }); }}>
+            <TrashSimple size={12} /> Clear
+          </button>
+        ) : null}
+      >
+        <label className="text-area">
+          <span className="sr-only">Transcript</span>
           <textarea
             rows={5}
             value={transcript.text}
             readOnly={processing}
-            placeholder="Transcribed speech will appear here"
-            onChange={(event) => patchTranscript({ text: event.target.value, words: [] })}
+            placeholder="Transcribed speech appears here. You can also type captions yourself."
+            onFocus={onBeginEdit}
+            onChange={(event) => liveTranscript({ text: event.target.value, words: [] })}
           />
-          {transcript.text && !transcript.words?.length && <small>Transcribe again to generate word-by-word timing.</small>}
         </label>
-      </section>
+        {transcript.text && !transcript.words?.length && <p className="hint">Edited captions show as one block. Transcribe again for word-by-word timing.</p>}
+      </Section>
 
-      <section className="transcription-workspace__section caption-designer">
-        <div className="transcription-section-heading">
-          <div><strong>Caption style</strong><span>Google Fonts</span></div>
-          <label className="caption-switch">
-            <input type="checkbox" checked={transcript.showAsCaptions} onChange={(event) => patchTranscript({ showAsCaptions: event.target.checked })} />
-            <span />
-          </label>
-        </div>
-
-        <div className={`caption-style-preview ${captionBoxEnabled(transcript) ? '' : 'caption-style-preview--no-box'}`}>
-          <span style={{
-            color: transcript.color,
-            fontFamily: captionFontStack(transcript.fontFamily, transcript.customFont),
-            fontSize: `${Math.max(17, (transcript.fontSize || 54) * 0.42)}px`,
-          }}>{sampleWord}</span>
-          <small>WORD-BY-WORD PREVIEW</small>
-        </div>
-
-        <div className="caption-font-grid" role="group" aria-label="Google caption fonts">
-          {CAPTION_FONTS.map(({ family }) => (
-            <button
-              key={family}
-              type="button"
-              className={transcript.fontFamily === family ? 'is-active' : ''}
-              style={{ fontFamily: captionFontStack(family) }}
-              onClick={() => patchTranscript({ fontFamily: family })}
-            ><b>Aa</b><span>{family}</span></button>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          className={`caption-custom-font ${transcript.customFont && transcript.fontFamily === transcript.customFont.family ? 'is-active' : ''}`}
-          disabled={fontLoading || !window.pixelwave?.openCaptionFont}
-          onClick={chooseCustomFont}
-        >
-          <span className="caption-custom-font__icon"><UploadSimple size={13} weight="bold" /></span>
-          <span className="caption-custom-font__copy">
-            <strong>{transcript.customFont?.name || 'Custom font'}</strong>
-            <small>{transcript.customFont ? 'Loaded from your computer' : 'TTF, OTF, WOFF, or WOFF2'}</small>
+      <Section id="captions-style" title="Caption style">
+        <Switch label="Show captions" checked={transcript.showAsCaptions} onChange={(showAsCaptions) => patchTranscript({ showAsCaptions })} />
+        <div className={`caption-sample ${captionBoxEnabled(transcript) ? '' : 'is-plain'}`}>
+          <span style={{ color: transcript.color, fontFamily: captionFontStack(transcript.fontFamily, transcript.customFont) }}>
+            {transcript.words?.[0]?.text || transcript.text.trim().split(/\s+/)[0] || 'Caption'}
           </span>
-          <span className="caption-custom-font__action">{fontLoading ? 'Loading' : transcript.customFont ? 'Change' : 'Choose'}</span>
-        </button>
-        {fontError && <p className="transcription-error" role="alert">{fontError}</p>}
-
-        <label className="caption-size-control">
-          <span><strong>Size</strong><output>{transcript.fontSize}px</output></span>
-          <input type="range" min="28" max="92" step="2" value={transcript.fontSize} onChange={(event) => patchTranscript({ fontSize: Number(event.target.value) })} />
-        </label>
-
-        <label className="caption-color-control">
-          <span>Text color</span>
-          <input type="color" value={transcript.color} onChange={(event) => patchTranscript({ color: event.target.value })} />
-          <output>{transcript.color.toUpperCase()}</output>
-        </label>
-        <label className="caption-box-control">
-          <span><strong>Caption box</strong><small>Dark background behind the words</small></span>
-          <span className="caption-switch">
-            <input
-              type="checkbox"
-              checked={captionBoxEnabled(transcript)}
-              onChange={(event) => patchTranscript({ backgroundEnabled: event.target.checked })}
-            />
-            <span />
-          </span>
-        </label>
-        <p className="transcription-note">Timed words follow the speaker in the monitor and in exported video.</p>
-      </section>
+        </div>
+        <SelectField label="Font" value={transcript.fontFamily} options={fontOptions} onChange={(fontFamily) => patchTranscript({ fontFamily })} />
+        <Button size="sm" disabled={fontLoading || !window.pixelwave?.openCaptionFont} onClick={chooseCustomFont}>
+          <UploadSimple size={14} /> {fontLoading ? 'Loading font' : 'Use a font file'}
+        </Button>
+        {fontError && <p className="error-text" role="alert">{fontError}</p>}
+        <PropertyRow label="Size" value={transcript.fontSize} min={20} max={120} step={1} unit="px" defaultValue={54} onBegin={onBeginEdit} onChange={(fontSize) => liveTranscript({ fontSize })} />
+        <PropertyRow label="Height" value={transcript.positionY ?? defaultPositionY} min={10} max={95} step={1} unit="%" defaultValue={defaultPositionY} onBegin={onBeginEdit} onChange={(positionY) => liveTranscript({ positionY })} />
+        <ColorField label="Color" value={transcript.color} onBegin={onBeginEdit} onChange={(color) => liveTranscript({ color })} />
+        <Switch label="Caption box" description="Dark box behind the words" checked={captionBoxEnabled(transcript)} onChange={(backgroundEnabled) => patchTranscript({ backgroundEnabled })} />
+      </Section>
     </div>
   );
 }
