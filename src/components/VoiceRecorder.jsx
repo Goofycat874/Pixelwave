@@ -1,23 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
-import { Microphone, Record, Stop, X } from '@phosphor-icons/react';
+import { Microphone, Stop } from '@phosphor-icons/react';
 import { formatRecordingDuration, selectRecordingMime } from '../lib/recording.js';
+import { Button, Dialog } from './ui.jsx';
 
-const waveformBars = Array.from({ length: 24 }, (_, index) => index);
+const COPY = {
+  ready: 'Your take is saved to the media library and placed at the playhead.',
+  recording: 'Speak naturally. Press stop when you are done and the take lands on the timeline.',
+  saving: 'Saving the take and placing it on the timeline.',
+  error: '',
+};
 
 export default function VoiceRecorder({ open, onClose, onComplete }) {
   const [status, setStatus] = useState('ready');
   const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
   const [error, setError] = useState('');
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const meterRef = useRef(null);
+  const audioContextRef = useRef(null);
   const startedAtRef = useRef(0);
   const cancelledRef = useRef(false);
 
   const stopTracks = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    if (meterRef.current) window.clearInterval(meterRef.current);
+    meterRef.current = null;
+    audioContextRef.current?.close().catch(() => {});
+    audioContextRef.current = null;
+    setLevel(0);
   };
 
   const clearTimer = () => {
@@ -43,6 +57,25 @@ export default function VoiceRecorder({ open, onClose, onComplete }) {
 
   if (!open) return null;
 
+  const watchLevel = (stream) => {
+    try {
+      const context = new AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      context.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      audioContextRef.current = context;
+      meterRef.current = window.setInterval(() => {
+        analyser.getByteTimeDomainData(samples);
+        let peak = 0;
+        for (const sample of samples) peak = Math.max(peak, Math.abs(sample - 128) / 128);
+        setLevel(Math.min(1, peak * 1.6));
+      }, 60);
+    } catch {
+      // The level meter is optional; recording still works without it.
+    }
+  };
+
   const startRecording = async () => {
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
       setStatus('error');
@@ -55,6 +88,7 @@ export default function VoiceRecorder({ open, onClose, onComplete }) {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
+      watchLevel(stream);
       const mimeType = selectRecordingMime((type) => MediaRecorder.isTypeSupported(type));
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: 192_000 } : undefined);
       recorderRef.current = recorder;
@@ -68,7 +102,7 @@ export default function VoiceRecorder({ open, onClose, onComplete }) {
         clearTimer();
         stopTracks();
         setStatus('error');
-        setError('The microphone stopped unexpectedly. Please try another take.');
+        setError('The microphone stopped unexpectedly. Try another take.');
       });
       recorder.addEventListener('stop', async () => {
         clearTimer();
@@ -120,37 +154,29 @@ export default function VoiceRecorder({ open, onClose, onComplete }) {
   };
 
   return (
-    <div className="voice-recorder-overlay" role="dialog" aria-modal="true" aria-label="Record voice">
-      <div className="voice-recorder-dialog">
-        <button type="button" className="voice-recorder-close" aria-label="Close recorder" onClick={cancel}><X size={15} /></button>
-        <div className={`voice-recorder-mark is-${status}`}>
-          {status === 'recording' ? <Record size={20} weight="fill" /> : <Microphone size={22} weight="duotone" />}
+    <Dialog
+      title={status === 'recording' ? 'Recording' : status === 'saving' ? 'Saving take' : 'Record voiceover'}
+      description={COPY[status] || undefined}
+      onClose={cancel}
+      width={420}
+    >
+      <div className="recorder">
+        <output className="recorder__time">{formatRecordingDuration(elapsed)}</output>
+        <div className={`recorder__meter ${level > 0.92 ? 'is-hot' : ''}`} aria-label="Microphone level" role="meter" aria-valuemin={0} aria-valuemax={1} aria-valuenow={level}>
+          <span style={{ transform: `scaleX(${Math.max(0.01, level)})` }} />
         </div>
-        <p className="eyebrow">Voice recorder</p>
-        <h2>{status === 'recording' ? 'Recording take' : status === 'saving' ? 'Saving take' : status === 'error' ? 'Recording paused' : 'Add your voice'}</h2>
-        <p className="voice-recorder-copy">
-          {status === 'recording'
-            ? 'Speak naturally. Stop when you are ready to add this take at the playhead.'
-            : status === 'saving'
-              ? 'Pixelwave is preparing the audio and placing it on your timeline.'
-              : 'Your take will be saved to the media bin and inserted at the current playhead.'}
-        </p>
-
-        <div className={`voice-waveform ${status === 'recording' ? 'is-live' : ''}`} aria-hidden="true">
-          {waveformBars.map((bar) => <span key={bar} style={{ '--bar-index': bar }} />)}
-        </div>
-        <output className="voice-recorder-time">{formatRecordingDuration(elapsed)}</output>
-        {error && <p className="voice-recorder-error" role="alert">{error}</p>}
-
-        <div className="voice-recorder-actions">
+        {error && <p className="error-text" role="alert">{error}</p>}
+        <div className="recorder__actions">
           {status === 'recording' ? (
-            <button type="button" className="voice-stop-button" onClick={finishRecording}><Stop size={15} weight="fill" /> Stop & add</button>
+            <Button variant="primary" onClick={finishRecording} data-autofocus><Stop size={15} weight="fill" /> Stop and add</Button>
           ) : (
-            <button type="button" className="voice-start-button" disabled={status === 'saving'} onClick={startRecording}><Microphone size={15} weight="fill" /> {status === 'error' ? 'Try again' : 'Start recording'}</button>
+            <Button className="recorder__record" disabled={status === 'saving'} onClick={startRecording} data-autofocus>
+              <Microphone size={15} weight="fill" /> {status === 'error' ? 'Try again' : 'Start recording'}
+            </Button>
           )}
-          <button type="button" className="voice-cancel-button" disabled={status === 'saving'} onClick={cancel}>Cancel</button>
+          <Button variant="ghost" disabled={status === 'saving'} onClick={cancel}>Cancel</Button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }

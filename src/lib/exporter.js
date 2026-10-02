@@ -1,10 +1,52 @@
-import { activeClipsAt, clipTextOverlays, clipTrack, computedColorAdjustments } from './editor.js';
-import {
-  captionBoxEnabled,
-  captionFontStack,
-  captionTextForClip,
-  loadCustomCaptionFont,
-} from './transcription.js';
+import { clipTextOverlays, clipTrack, getProjectDuration } from './editor.js';
+import { drawFrame, framePlan, sourceTimeAt } from './compositor.js';
+import { resolveTextStyle, textFont } from './text.js';
+import { captionFontStack, loadCustomCaptionFont } from './transcription.js';
+
+export const EXPORT_FORMATS = Object.freeze([
+  { id: 'mp4', label: 'MP4', detail: 'H.264, plays everywhere', extension: 'mp4', kind: 'video' },
+  { id: 'mov', label: 'MOV', detail: 'H.264 in a QuickTime file', extension: 'mov', kind: 'video' },
+  { id: 'webm', label: 'WebM', detail: 'VP9 for the web', extension: 'webm', kind: 'video' },
+  { id: 'gif', label: 'GIF', detail: 'Looping animation, no sound', extension: 'gif', kind: 'gif' },
+  { id: 'mp3', label: 'MP3', detail: 'Audio only', extension: 'mp3', kind: 'audio' },
+  { id: 'wav', label: 'WAV', detail: 'Lossless audio only', extension: 'wav', kind: 'audio' },
+]);
+
+export const EXPORT_QUALITIES = Object.freeze([
+  { id: 'high', label: 'High', detail: 'Best picture, larger file', crf: 16 },
+  { id: 'standard', label: 'Standard', detail: 'Great for sharing', crf: 20 },
+  { id: 'small', label: 'Small', detail: 'Quick uploads', crf: 26 },
+]);
+
+export function exportProfile(format) {
+  return EXPORT_FORMATS.find((profile) => profile.id === format) || null;
+}
+
+export function exportQuality(id) {
+  return EXPORT_QUALITIES.find((quality) => quality.id === id) || EXPORT_QUALITIES[1];
+}
+
+export function evenSize(value) {
+  return Math.max(2, Math.round(Number(value) / 2) * 2);
+}
+
+// Offers sizes by their short side so vertical and landscape projects read the same way.
+export function exportResolutions(project) {
+  const width = Number(project.width) || 1920;
+  const height = Number(project.height) || 1080;
+  const shortSide = Math.min(width, height);
+  const targets = [...new Set([2160, 1440, 1080, 720, 480, shortSide])].sort((a, b) => b - a);
+  return targets.map((target) => {
+    const factor = target / shortSide;
+    return {
+      id: String(target),
+      label: `${target}p`,
+      width: evenSize(width * factor),
+      height: evenSize(height * factor),
+      native: target === shortSide,
+    };
+  });
+}
 
 export function buildRenderPlan(clips) {
   const sorted = [...clips].sort((a, b) => a.start - b.start || clipTrack(a) - clipTrack(b));
@@ -12,71 +54,18 @@ export function buildRenderPlan(clips) {
   return { clips: sorted, duration: Math.round(duration * 1000) / 1000 };
 }
 
-export function exportFrameTimes(duration, frameRate = 30) {
+export function exportRange(project, range = null) {
+  const duration = getProjectDuration(project.clips || []);
+  const start = Math.max(0, Math.min(duration, Number(range?.start) || 0));
+  const requestedEnd = Number.isFinite(Number(range?.end)) ? Number(range.end) : duration;
+  const end = Math.max(start, Math.min(duration, requestedEnd));
+  return { start, end, duration: Math.round((end - start) * 1000) / 1000 };
+}
+
+export function exportFrameTimes(duration, frameRate = 30, start = 0) {
   const fps = Math.max(1, Math.round(Number(frameRate) || 30));
-  const count = Math.max(1, Math.ceil(Math.max(0, Number(duration) || 0) * fps));
-  return Array.from({ length: count }, (_, index) => Math.round((index / fps) * 1_000_000) / 1_000_000);
-}
-
-const exportProfiles = {
-  webm: { extension: 'webm', label: 'WebM', detail: 'Fast master' },
-  mp4: { extension: 'mp4', label: 'MP4 · H.264', detail: 'Universal playback' },
-  mov: { extension: 'mov', label: 'MOV · H.264', detail: 'QuickTime container' },
-};
-
-export function exportProfile(format) {
-  return exportProfiles[format] || null;
-}
-
-export function canvasFilter(effects = {}) {
-  const grade = computedColorAdjustments(effects);
-  const hue = (grade.temperature < 0 ? 185 : 0) + grade.tint * 0.25;
-  return [
-    `brightness(${100 + grade.exposure}%)`,
-    `contrast(${grade.contrast}%)`,
-    `saturate(${grade.saturation}%)`,
-    `sepia(${Math.round(Math.abs(grade.temperature) * 0.2)}%)`,
-    `hue-rotate(${hue}deg)`,
-    `blur(${effects.blur || 0}px)`,
-  ].join(' ');
-}
-
-function ellipsizeCaption(context, text, maxWidth) {
-  let value = String(text || '').trim();
-  while (value && context.measureText(`${value}…`).width > maxWidth) value = value.slice(0, -1).trimEnd();
-  return value ? `${value}…` : '…';
-}
-
-export function captionLines(context, text, maxWidth, maxLines = 3) {
-  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
-  if (!words.length || maxLines < 1) return [];
-  const lines = [];
-  let current = '';
-
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (context.measureText(candidate).width <= maxWidth) {
-      current = candidate;
-      continue;
-    }
-    if (!current) {
-      current = ellipsizeCaption(context, word, maxWidth).replace(/…$/, '');
-      continue;
-    }
-    if (lines.length === maxLines - 1) return [...lines, ellipsizeCaption(context, current, maxWidth)];
-    lines.push(current);
-    current = word;
-  }
-
-  if (current && lines.length < maxLines) lines.push(current);
-  return lines;
-}
-
-export function captionRenderStyle(transcript = {}) {
-  return {
-    drawBackground: captionBoxEnabled(transcript),
-    fontStack: captionFontStack(transcript.fontFamily, transcript.customFont),
-  };
+  const count = Math.max(1, Math.ceil(Math.max(0, Number(duration) || 0) * fps - 1e-6));
+  return Array.from({ length: count }, (_, index) => Math.round((start + index / fps) * 1_000_000) / 1_000_000);
 }
 
 function waitFor(element, event) {
@@ -97,146 +86,16 @@ async function prepareSource(asset) {
     const image = new Image();
     image.crossOrigin = 'anonymous';
     image.src = asset.src;
-    await waitFor(image, 'load');
+    await image.decode().catch(() => waitFor(image, 'load'));
     return image;
   }
-  const element = document.createElement(asset.kind === 'audio' ? 'audio' : 'video');
+  const element = document.createElement('video');
   element.preload = 'auto';
+  element.muted = true;
   element.crossOrigin = 'anonymous';
   element.src = asset.src;
-  await waitFor(element, 'canplay');
+  await waitFor(element, 'loadeddata');
   return element;
-}
-
-function drawSource(context, source, clip, canvas, alpha = 1, offsetX = 0, transitionScale = 1, wipeProgress = 1) {
-  if (clip.kind === 'audio') return;
-  const sourceWidth = source.videoWidth || source.naturalWidth;
-  const sourceHeight = source.videoHeight || source.naturalHeight;
-  if (!sourceWidth || !sourceHeight) return;
-  const fit = (clip.fit || 'contain') === 'cover'
-    ? Math.max(canvas.width / sourceWidth, canvas.height / sourceHeight)
-    : Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight);
-  const width = sourceWidth * fit;
-  const height = sourceHeight * fit;
-  const effects = clip.effects || {};
-
-  context.save();
-  if (wipeProgress < 1) {
-    context.beginPath();
-    context.rect(0, 0, canvas.width * wipeProgress, canvas.height);
-    context.clip();
-  }
-  context.globalAlpha = alpha * ((effects.opacity ?? 100) / 100);
-  context.filter = canvasFilter(effects);
-  context.translate(
-    canvas.width / 2 + offsetX + ((effects.positionX || 0) / 100) * canvas.width / 2,
-    canvas.height / 2 + ((effects.positionY || 0) / 100) * canvas.height / 2,
-  );
-  context.rotate(((effects.rotation || 0) * Math.PI) / 180);
-  context.scale(
-    ((effects.scale ?? 100) / 100) * transitionScale * (effects.flipX ? -1 : 1),
-    ((effects.scale ?? 100) / 100) * transitionScale * (effects.flipY ? -1 : 1),
-  );
-  context.drawImage(source, -width / 2, -height / 2, width, height);
-  context.restore();
-
-  if (effects.vignette > 0) {
-    const gradient = context.createRadialGradient(canvas.width / 2, canvas.height / 2, canvas.height * 0.18, canvas.width / 2, canvas.height / 2, canvas.width * 0.68);
-    gradient.addColorStop(0, 'rgba(0,0,0,0)');
-    gradient.addColorStop(1, `rgba(0,0,0,${Math.min(0.86, effects.vignette / 110)})`);
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-  }
-}
-
-function drawTextOverlay(context, title, canvas) {
-  if (!title?.text) return;
-  context.save();
-  context.globalAlpha = (title.opacity ?? 100) / 100;
-  context.font = `650 ${title.fontSize || 54}px Geist, Arial, sans-serif`;
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  const { x, y } = titleCanvasPosition(title, canvas);
-  const metrics = context.measureText(title.text);
-  const paddingX = 24;
-  const boxHeight = (title.fontSize || 54) * 1.35;
-  context.fillStyle = 'rgba(10, 12, 11, 0.48)';
-  context.beginPath();
-  context.roundRect(x - metrics.width / 2 - paddingX, y - boxHeight / 2, metrics.width + paddingX * 2, boxHeight, 12);
-  context.fill();
-  context.shadowColor = 'rgba(0,0,0,0.5)';
-  context.shadowBlur = 12;
-  context.fillStyle = title.color || '#ffffff';
-  context.fillText(title.text, x, y);
-  context.restore();
-}
-
-export function exportTextOverlays(clip) {
-  return clipTextOverlays(clip);
-}
-
-function drawClipTextOverlays(context, clip, canvas) {
-  exportTextOverlays(clip).forEach((text) => drawTextOverlay(context, text, canvas));
-}
-
-export function titleCanvasPosition(title = {}, canvas = {}) {
-  return {
-    x: Math.round((Number(canvas.width) || 0) * ((title.positionX ?? 50) / 100) * 10000) / 10000,
-    y: Math.round((Number(canvas.height) || 0) * ((title.positionY ?? 78) / 100) * 10000) / 10000,
-  };
-}
-
-function drawCaption(context, clip, canvas, timelineTime) {
-  const captionText = captionTextForClip(clip, timelineTime);
-  if (!captionText) return;
-  const fontSize = Math.max(28, Math.round(clip.transcript?.fontSize || canvas.height * 0.043));
-  const lineHeight = fontSize * 1.26;
-  const maxWidth = canvas.width * 0.72;
-  const paddingX = fontSize * 0.72;
-  const paddingY = fontSize * 0.46;
-
-  context.save();
-  context.filter = 'none';
-  const style = captionRenderStyle(clip.transcript);
-  context.font = `700 ${fontSize}px ${style.fontStack}`;
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  const lines = captionLines(context, captionText, maxWidth, 3);
-  if (!lines.length) {
-    context.restore();
-    return;
-  }
-  const textWidth = Math.max(...lines.map((line) => context.measureText(line).width));
-  const boxWidth = textWidth + paddingX * 2;
-  const boxHeight = lines.length * lineHeight + paddingY * 2;
-  const x = canvas.width / 2;
-  const y = canvas.height * 0.88;
-  if (style.drawBackground) {
-    context.fillStyle = 'rgba(8, 10, 9, 0.82)';
-    context.beginPath();
-    context.roundRect(x - boxWidth / 2, y - boxHeight / 2, boxWidth, boxHeight, fontSize * 0.3);
-    context.fill();
-  }
-  context.shadowColor = 'rgba(0, 0, 0, 0.65)';
-  context.shadowBlur = fontSize * 0.35;
-  context.fillStyle = clip.transcript?.color || '#ffffff';
-  lines.forEach((line, index) => {
-    const lineY = y + (index - (lines.length - 1) / 2) * lineHeight;
-    context.fillText(line, x, lineY);
-  });
-  context.restore();
-}
-
-function canvasPngBytes(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        reject(new Error('Pixelwave could not encode a rendered video frame.'));
-        return;
-      }
-      resolve(await blob.arrayBuffer());
-    }, 'image/png');
-  });
 }
 
 async function seekVideo(source, targetTime) {
@@ -244,7 +103,7 @@ async function seekVideo(source, targetTime) {
   const duration = Number.isFinite(source.duration) ? source.duration : targetTime;
   const target = Math.max(0, Math.min(targetTime, Math.max(0, duration - 0.001)));
   source.pause();
-  if (source.readyState >= 2 && Math.abs(source.currentTime - target) < 0.001) return;
+  if (source.readyState >= 2 && Math.abs(source.currentTime - target) < 0.0005) return;
   await new Promise((resolve, reject) => {
     const cleanup = () => {
       source.removeEventListener('seeked', ready);
@@ -258,75 +117,145 @@ async function seekVideo(source, targetTime) {
   });
 }
 
-function sourceTimeAt(clip, timelineTime) {
-  return Math.max(0, clip.sourceStart + (timelineTime - clip.start) * (clip.speed || 1));
+export function projectFontRequests(project) {
+  const requests = new Set();
+  for (const clip of project.clips || []) {
+    for (const overlay of clipTextOverlays(clip)) requests.add(textFont(resolveTextStyle(overlay), 48));
+    if (clip.transcript?.text) requests.add(`700 48px ${captionFontStack(clip.transcript.fontFamily, clip.transcript.customFont)}`);
+  }
+  return [...requests];
 }
 
-export async function exportTimeline({ project, onProgress, onFrame, cancelToken }) {
-  const plan = buildRenderPlan(project.clips);
-  if (!plan.duration) throw new Error('Add at least one clip before exporting.');
-  if (typeof onFrame !== 'function') throw new Error('The direct video export session is not available.');
+export async function loadProjectFonts(project) {
+  await Promise.all((project.clips || []).map((clip) => loadCustomCaptionFont(clip.transcript?.customFont).catch(() => null)));
+  if (!document.fonts?.load) return;
+  await Promise.all(projectFontRequests(project).map((font) => document.fonts.load(font).catch(() => null)));
+  await document.fonts.ready;
+}
 
-  const canvas = document.createElement('canvas');
-  canvas.width = project.width || 1280;
-  canvas.height = project.height || 720;
-  const context = canvas.getContext('2d', { alpha: false });
-  const assetById = new Map(project.media.map((asset) => [asset.id, asset]));
-  const visualClips = plan.clips.filter((clip) => clip.kind !== 'audio');
-  const sourceByClip = new Map();
+function needsVisualSource(clip) {
+  return clip.kind === 'video' || clip.kind === 'image';
+}
 
-  await Promise.all(plan.clips.map((clip) => loadCustomCaptionFont(clip.transcript?.customFont)));
-  if (document.fonts?.ready) await document.fonts.ready;
-  await Promise.all(visualClips.map(async (clip) => {
-    const asset = assetById.get(clip.assetId);
-    if (!asset) throw new Error(`Missing media for ${clip.name}.`);
-    sourceByClip.set(clip.id, await prepareSource(asset));
-  }));
+function releaseVideo(element) {
+  if (!(element instanceof HTMLVideoElement)) return;
+  element.removeAttribute('src');
+  element.load();
+}
 
-  const frameTimes = exportFrameTimes(plan.duration, project.frameRate || 30);
-  for (let frameIndex = 0; frameIndex < frameTimes.length; frameIndex += 1) {
-    if (cancelToken?.cancelled) throw new Error('Export cancelled.');
-    const time = frameTimes[frameIndex];
-    const activeClips = activeClipsAt(plan.clips, time);
-    const visualLayers = activeClips.filter((clip) => clip.kind !== 'audio');
+// Opens decoders only for clips on screen and releases them once their clip has ended,
+// so long timelines do not hold every video open at once.
+export function createSourceSet(project) {
+  const assetById = new Map((project.media || []).map((asset) => [asset.id, asset]));
+  const byClip = new Map();
+  const pending = new Map();
+  const imageByAsset = new Map();
 
-    await Promise.all(visualLayers.map((clip) => (
-      seekVideo(sourceByClip.get(clip.id), sourceTimeAt(clip, time))
-    )));
-
-    context.fillStyle = '#101211';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    for (const visual of visualLayers) {
-      const source = sourceByClip.get(visual.id);
-      const transition = visual.transition || { type: 'cut', duration: 0 };
-      const progress = transition.type === 'cut' ? 1 : Math.min(1, (time - visual.start) / Math.max(0.1, transition.duration));
-      const previous = plan.clips.find((clip) => (
-        clip.kind !== 'audio'
-        && clipTrack(clip) === clipTrack(visual)
-        && Math.abs(clip.start + clip.duration - visual.start) < 0.05
-      ));
-      if (previous && progress < 1 && transition.type === 'dissolve') {
-        const overlapTime = previous.start + previous.duration - (visual.start + transition.duration - time);
-        await seekVideo(sourceByClip.get(previous.id), sourceTimeAt(previous, overlapTime));
-        drawSource(context, sourceByClip.get(previous.id), previous, canvas, 1 - progress);
+  async function ensure(clip) {
+    if (!needsVisualSource(clip)) return null;
+    if (byClip.has(clip.id)) return byClip.get(clip.id);
+    if (!pending.has(clip.id)) {
+      const asset = assetById.get(clip.assetId);
+      if (!asset) throw new Error(`Missing media for ${clip.name}.`);
+      let loading;
+      if (asset.kind === 'image') {
+        if (!imageByAsset.has(asset.id)) imageByAsset.set(asset.id, prepareSource(asset));
+        loading = imageByAsset.get(asset.id);
+      } else {
+        loading = prepareSource(asset);
       }
-      const alpha = transition.type === 'dissolve' ? progress : 1;
-      const offset = transition.type === 'slide' ? (1 - progress) * canvas.width : 0;
-      const transitionScale = transition.type === 'zoom' ? 0.72 + progress * 0.28 : 1;
-      const wipeProgress = transition.type === 'wipe' ? progress : 1;
-      drawSource(context, source, visual, canvas, transition.type === 'zoom' ? progress : alpha, offset, transitionScale, wipeProgress);
-      if (transition.type === 'dip' && progress < 1) {
-        context.fillStyle = `rgba(0,0,0,${Math.sin(progress * Math.PI)})`;
-        context.fillRect(0, 0, canvas.width, canvas.height);
-      }
-      drawClipTextOverlays(context, visual, canvas);
+      pending.set(clip.id, loading.then((element) => {
+        byClip.set(clip.id, element);
+        pending.delete(clip.id);
+        return element;
+      }));
     }
-    const captionClip = [...activeClips].reverse().find((clip) => clip.transcript?.showAsCaptions && clip.transcript?.text);
-    if (captionClip) drawCaption(context, captionClip, canvas, time);
-
-    await onFrame(await canvasPngBytes(canvas), frameIndex, frameTimes.length);
-    onProgress?.((frameIndex + 1) / frameTimes.length);
+    return pending.get(clip.id);
   }
 
-  return { duration: plan.duration, frameCount: frameTimes.length };
+  return {
+    get: (clip) => byClip.get(clip.id) || null,
+    async seekFor(time) {
+      const plan = framePlan(project, time);
+      const entries = plan.layers.flatMap((layer) => [
+        { clip: layer.clip, time: layer.time },
+        ...(layer.previous ? [{ clip: layer.previous.clip, time: layer.previous.time }] : []),
+      ]);
+      await Promise.all(entries.map(async (entry) => {
+        const element = await ensure(entry.clip);
+        await seekVideo(element, sourceTimeAt(entry.clip, entry.time));
+      }));
+      const needed = new Set(entries.map((entry) => entry.clip.id));
+      for (const [clipId, element] of byClip) {
+        const clip = project.clips.find((candidate) => candidate.id === clipId);
+        if (!needed.has(clipId) && element instanceof HTMLVideoElement && (!clip || clip.start + clip.duration < time - 2)) {
+          releaseVideo(element);
+          byClip.delete(clipId);
+        }
+      }
+    },
+    dispose() {
+      for (const element of byClip.values()) releaseVideo(element);
+      byClip.clear();
+    },
+  };
+}
+
+function createCanvas(width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+export async function exportTimeline({
+  project,
+  width = project.width,
+  height = project.height,
+  frameRate = project.frameRate || 30,
+  range = null,
+  onProgress,
+  onFrame,
+  cancelToken,
+}) {
+  const span = exportRange(project, range);
+  if (!span.duration) throw new Error('Add at least one clip before exporting.');
+  if (typeof onFrame !== 'function') throw new Error('The video export session is not available.');
+
+  const canvas = createCanvas(evenSize(width), evenSize(height));
+  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+  await loadProjectFonts(project);
+  const sources = createSourceSet(project);
+
+  try {
+    const frameTimes = exportFrameTimes(span.duration, frameRate, span.start);
+    for (let frameIndex = 0; frameIndex < frameTimes.length; frameIndex += 1) {
+      if (cancelToken?.cancelled) throw new Error('Export cancelled.');
+      const time = frameTimes[frameIndex];
+      await sources.seekFor(time);
+      drawFrame(context, { project, time, getSource: sources.get });
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      await onFrame(pixels.buffer, frameIndex, frameTimes.length);
+      onProgress?.((frameIndex + 1) / frameTimes.length);
+    }
+    return { duration: span.duration, frameCount: frameTimes.length, width: canvas.width, height: canvas.height };
+  } finally {
+    sources.dispose();
+  }
+}
+
+export async function renderSnapshot(project, time) {
+  const canvas = createCanvas(evenSize(project.width), evenSize(project.height));
+  const context = canvas.getContext('2d', { alpha: false });
+  await loadProjectFonts(project);
+  const sources = createSourceSet(project);
+  try {
+    await sources.seekFor(time);
+    drawFrame(context, { project, time, getSource: sources.get });
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('Pixelwave could not capture this frame.');
+    return blob.arrayBuffer();
+  } finally {
+    sources.dispose();
+  }
 }

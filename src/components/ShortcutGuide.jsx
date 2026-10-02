@@ -1,77 +1,31 @@
-import { Keyboard, X } from '@phosphor-icons/react';
-import { useEffect } from 'react';
+import { formatShortcut } from '../lib/shortcuts.js';
+import { Dialog } from './ui.jsx';
 
-const groups = [
-  {
-    title: 'Playback',
-    shortcuts: [
-      ['Space', 'Play or pause'],
-      ['← / →', 'Step one frame'],
-      ['Shift + ← / →', 'Step one second'],
-      ['Home / End', 'Sequence start or end'],
-    ],
-  },
-  {
-    title: 'Editing',
-    shortcuts: [
-      ['⌘ / Ctrl + C', 'Copy selected clip'],
-      ['⌘ / Ctrl + V', 'Paste at playhead'],
-      ['⌘ / Ctrl + D', 'Duplicate selected clip'],
-      ['Option / Alt + ← / →', 'Nudge clip one frame'],
-      ['Option / Alt + Shift + ← / →', 'Nudge clip one second'],
-      ['S', 'Split at playhead'],
-      ['Delete', 'Remove selected clip'],
-      ['Escape', 'Clear selection'],
-    ],
-  },
-  {
-    title: 'Project',
-    shortcuts: [
-      ['⌘ / Ctrl + S', 'Save project'],
-      ['⌘ / Ctrl + O', 'Open project'],
-      ['⌘ / Ctrl + I', 'Import media'],
-      ['⌘ / Ctrl + Z', 'Undo'],
-      ['Shift + ⌘ / Ctrl + Z', 'Redo'],
-      ['?', 'Open this guide'],
-    ],
-  },
-];
+const GROUP_ORDER = ['Playback', 'Edit', 'Timeline', 'Add', 'Project', 'View'];
 
-export default function ShortcutGuide({ open, onClose }) {
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnEscape = (event) => event.key === 'Escape' && onClose();
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose, open]);
-
-  if (!open) return null;
+export default function ShortcutGuide({ commands, mac, onClose }) {
+  const groups = GROUP_ORDER.map((group) => ({
+    group,
+    items: commands.filter((command) => command.group === group && command.keys?.length),
+  })).filter((entry) => entry.items.length);
 
   return (
-    <div className="shortcut-overlay" role="presentation" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="shortcut-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcut-guide-title">
-        <header className="shortcut-dialog__header">
-          <div className="shortcut-dialog__mark"><Keyboard size={21} weight="duotone" /></div>
-          <div>
-            <p className="eyebrow">Work faster</p>
-            <h2 id="shortcut-guide-title">Keyboard shortcuts</h2>
-          </div>
-          <button type="button" aria-label="Close keyboard shortcuts" onClick={onClose}><X size={15} /></button>
-        </header>
-        <div className="shortcut-groups">
-          {groups.map((group) => (
-            <section className="shortcut-group" key={group.title}>
-              <h3>{group.title}</h3>
-              <div>
-                {group.shortcuts.map(([keys, description]) => (
-                  <p key={keys}><span>{description}</span><kbd>{keys}</kbd></p>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-        <footer><span>Tip</span> Hover toolbar controls to see their shortcuts.</footer>
-      </section>
-    </div>
+    <Dialog title="Keyboard shortcuts" description={`Press ${formatShortcut('mod+k', mac)} to search every action by name.`} onClose={onClose} width={860}>
+      <div className="shortcut-columns">
+        {groups.map(({ group, items }) => (
+          <section key={group} className="shortcut-group">
+            <h3>{group}</h3>
+            {items.map((command) => (
+              <p key={command.id}>
+                <span>{command.label}</span>
+                <span className="shortcut-keys">
+                  {command.keys.map((key) => <kbd className="kbd" key={key}>{formatShortcut(key, mac)}</kbd>)}
+                </span>
+              </p>
+            ))}
+          </section>
+        ))}
+      </div>
+    </Dialog>
   );
 }

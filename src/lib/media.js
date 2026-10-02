@@ -1,12 +1,27 @@
-export function formatTime(seconds, precise = false) {
-  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+export function formatTime(seconds, precise = false, frameRate = 30) {
+  const fps = Math.max(1, Math.round(Number(frameRate) || 30));
+  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0) + 1e-6;
   const hours = Math.floor(safe / 3600);
   const minutes = Math.floor((safe % 3600) / 60);
   const wholeSeconds = Math.floor(safe % 60);
-  const frames = Math.floor((safe % 1) * 30);
+  const frames = Math.min(fps - 1, Math.floor((safe % 1) * fps));
   const prefix = hours ? `${String(hours).padStart(2, '0')}:` : '';
   const base = `${prefix}${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')}`;
   return precise ? `${base}:${String(frames).padStart(2, '0')}` : base;
+}
+
+// Accepts "75", "1:15", "00:01:15" or "00:01:15:12" (with frames) and returns seconds.
+export function parseTimecode(value, frameRate = 30) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+  const parts = text.split(/[:;.]/).map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  const fps = Math.max(1, Math.round(Number(frameRate) || 30));
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / fps;
+  if (parts.length === 4) return parts[0] * 3600 + parts[1] * 60 + parts[2] + parts[3] / fps;
+  return null;
 }
 
 export function configureMediaElement(element, src) {
