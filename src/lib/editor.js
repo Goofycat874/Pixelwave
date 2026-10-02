@@ -1,4 +1,6 @@
 import { scaleKeyframes, shiftKeyframes, splitKeyframes } from './animation.js';
+import { defaultCurves, wheelPuck } from './color.js';
+import { STYLIZE_DEFAULTS } from './effects.js';
 
 const MIN_CLIP_DURATION = 0.1;
 export const MAX_TRACK_INDEX = 5;
@@ -6,21 +8,93 @@ export const TIMELINE_GUTTER = 148;
 export const MIN_TIMELINE_ZOOM = 0.05;
 export const MAX_TIMELINE_ZOOM = 12;
 
-export const COLOR_PRESETS = {
-  original: { exposure: 0, contrast: 100, saturation: 100, temperature: 0, tint: 0 },
-  warm: { exposure: 4, contrast: 106, saturation: 112, temperature: 28, tint: 4 },
-  cool: { exposure: 1, contrast: 108, saturation: 104, temperature: -28, tint: -2 },
-  punch: { exposure: 3, contrast: 124, saturation: 128, temperature: 4, tint: 2 },
-  fade: { exposure: 8, contrast: 82, saturation: 86, temperature: 8, tint: 3 },
-  mono: { exposure: 2, contrast: 116, saturation: 0, temperature: 0, tint: 0 },
-};
-
 export function defaultPrimaryWheels() {
   return {
     lift: { x: 0, y: 0, luma: 0 },
     gamma: { x: 0, y: 0, luma: 0 },
     gain: { x: 0, y: 0, luma: 0 },
   };
+}
+
+// Everything the Color tab controls. A look replaces all of it, a reset restores all of it.
+const NEUTRAL_COLOR = {
+  exposure: 0,
+  contrast: 100,
+  saturation: 100,
+  temperature: 0,
+  tint: 0,
+  highlights: 0,
+  shadows: 0,
+  whites: 0,
+  blacks: 0,
+};
+
+const wheels = (patch = {}) => ({ ...defaultPrimaryWheels(), ...patch });
+
+// Looks are defined by the same controls a colorist would touch. Wheel pucks are given as a hue
+// (degrees on the wheel: 0 red, 60 yellow, 120 green, 180 cyan, 240 blue) and a strength.
+export const COLOR_PRESETS = {
+  original: {},
+  warm: { exposure: 4, contrast: 106, saturation: 112, temperature: 28, tint: 4 },
+  cool: { exposure: 1, contrast: 108, saturation: 104, temperature: -28, tint: -2 },
+  punch: { exposure: 3, contrast: 124, saturation: 128, temperature: 4, tint: 2 },
+  fade: { exposure: 8, contrast: 82, saturation: 86, temperature: 8, tint: 3 },
+  mono: { exposure: 2, contrast: 116, saturation: 0 },
+  cinema: {
+    contrast: 114,
+    saturation: 108,
+    highlights: -10,
+    shadows: -6,
+    primaryWheels: wheels({ lift: wheelPuck(185, 0.42), gain: wheelPuck(32, 0.4) }),
+  },
+  film: {
+    exposure: 2,
+    contrast: 108,
+    saturation: 90,
+    temperature: 6,
+    highlights: -14,
+    blacks: 28,
+    primaryWheels: wheels({ lift: wheelPuck(160, 0.22), gamma: wheelPuck(70, 0.1), gain: wheelPuck(45, 0.3) }),
+  },
+  bleach: { contrast: 138, saturation: 52, highlights: -8, blacks: -10 },
+  moody: {
+    exposure: -6,
+    contrast: 118,
+    saturation: 84,
+    shadows: -14,
+    highlights: -6,
+    primaryWheels: wheels({ lift: wheelPuck(205, 0.34), gamma: wheelPuck(200, 0.1, -0.1) }),
+  },
+  golden: {
+    exposure: 4,
+    contrast: 108,
+    saturation: 118,
+    temperature: 38,
+    tint: 6,
+    highlights: -10,
+    primaryWheels: wheels({ lift: wheelPuck(20, 0.14), gain: wheelPuck(42, 0.32) }),
+  },
+  matte: { contrast: 94, saturation: 90, highlights: -12, whites: -12, blacks: 42 },
+};
+
+function colorStateOf(effects = {}) {
+  const state = {};
+  for (const [key, neutral] of Object.entries(NEUTRAL_COLOR)) state[key] = Number(effects[key] ?? neutral);
+  state.primaryWheels = Object.fromEntries(Object.entries(defaultPrimaryWheels()).map(([key, neutral]) => [
+    key,
+    { ...neutral, ...(effects.primaryWheels?.[key] || {}) },
+  ]));
+  state.curves = Object.fromEntries(Object.entries(defaultCurves()).map(([key, neutral]) => [
+    key,
+    effects.curves?.[key] || neutral,
+  ]));
+  return state;
+}
+
+// The key of the look whose controls match these effects exactly, or '' when the grade has been tuned.
+export function activeColorPreset(effects = {}) {
+  const current = JSON.stringify(colorStateOf(effects));
+  return Object.keys(COLOR_PRESETS).find((key) => JSON.stringify(colorStateOf(applyColorPreset({}, key))) === current) || '';
 }
 
 function makeId(prefix = 'clip') {
@@ -38,9 +112,15 @@ export function defaultEffects() {
     saturation: 100,
     temperature: 0,
     tint: 0,
+    highlights: 0,
+    shadows: 0,
+    whites: 0,
+    blacks: 0,
     primaryWheels: defaultPrimaryWheels(),
+    curves: defaultCurves(),
     blur: 0,
     vignette: 0,
+    ...STYLIZE_DEFAULTS,
     rotation: 0,
     scale: 100,
     opacity: 100,
@@ -67,8 +147,10 @@ export function defaultEffects() {
 export function applyColorPreset(effects = {}, preset = 'original') {
   return {
     ...effects,
+    ...NEUTRAL_COLOR,
     ...(COLOR_PRESETS[preset] || COLOR_PRESETS.original),
-    primaryWheels: defaultPrimaryWheels(),
+    primaryWheels: { ...defaultPrimaryWheels(), ...(COLOR_PRESETS[preset]?.primaryWheels || {}) },
+    curves: { ...defaultCurves(), ...(COLOR_PRESETS[preset]?.curves || {}) },
   };
 }
 
@@ -76,24 +158,19 @@ export function resetColorEffects(effects = {}) {
   return applyColorPreset(effects, 'original');
 }
 
-function safeWheel(wheels, key) {
-  return { x: 0, y: 0, luma: 0, ...(wheels?.[key] || {}) };
-}
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+// The basic color sliders, clamped. Temperature, tint and the wheels are graded per channel in
+// src/lib/color.js, because folding them into brightness and hue shifts cannot balance color.
 export function computedColorAdjustments(effects = {}) {
-  const lift = safeWheel(effects.primaryWheels, 'lift');
-  const gamma = safeWheel(effects.primaryWheels, 'gamma');
-  const gain = safeWheel(effects.primaryWheels, 'gain');
   return {
-    exposure: clamp(Math.round((effects.exposure || 0) + lift.luma * 10 + gamma.luma * 18 + gain.luma * 25), -70, 70),
-    contrast: clamp(Math.round((effects.contrast ?? 100) - lift.luma * 10 + gamma.luma * 5 + gain.luma * 16), 0, 220),
+    exposure: clamp(Math.round(effects.exposure || 0), -70, 70),
+    contrast: clamp(Math.round(effects.contrast ?? 100), 0, 220),
     saturation: clamp(Math.round(effects.saturation ?? 100), 0, 220),
-    temperature: clamp(Math.round((effects.temperature || 0) + lift.x * 20 + gamma.x * 28 + gain.x * 36), -100, 100),
-    tint: clamp(Math.round((effects.tint || 0) + lift.y * 18 + gamma.y * 26 + gain.y * 34), -100, 100),
+    temperature: clamp(Math.round(effects.temperature || 0), -100, 100),
+    tint: clamp(Math.round(effects.tint || 0), -100, 100),
   };
 }
 

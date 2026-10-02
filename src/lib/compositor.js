@@ -1,6 +1,15 @@
 // The compositor draws one frame of the timeline into a 2D canvas. The live preview and
 // the exporter both call drawFrame(), so what you see while editing is what you export.
 import { animatedEffects, applyEasing, clipLocalTime, fadeEnvelope } from './animation.js';
+import { gradeChannels, gradeKey } from './color.js';
+import {
+  buildStylizeFilter,
+  hasStylizeFilter,
+  pixelateCells,
+  stylizeAmounts,
+  stylizeKey,
+  stylizeSeeds,
+} from './effects.js';
 import { activeClipsAt, clipTextOverlays, clipTrack, computedColorAdjustments } from './editor.js';
 import { isClipHidden, laneKind } from './project.js';
 import { hexToRgba, layoutTextOverlay, revealLines, textAnimationState, textFont, textReferenceScale } from './text.js';
@@ -16,6 +25,8 @@ export const TRANSITIONS = Object.freeze([
   ['zoom', 'Zoom'],
   ['blur', 'Blur'],
 ]);
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -91,17 +102,16 @@ export function chromaKeyMatrix({ keyMode = 'green', keyStrength = 40, keySoftne
   ];
 }
 
-const chromaFilters = new Map();
+// SVG filters live in one hidden <svg>. Dragging a slider creates a new filter per value, so the
+// registry keeps the most recently used ones and removes the rest.
+const FILTER_LIMIT = 48;
+const filterRegistry = new Map();
+let filterSerial = 0;
 
-export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
-  if (!doc?.createElementNS || !effects || effects.keyMode === 'off' || !effects.keyMode) return null;
-  const values = chromaKeyMatrix(effects).join(' ');
-  const cacheKey = `${effects.keyMode}:${values}`;
-  if (chromaFilters.has(cacheKey)) return chromaFilters.get(cacheKey);
-  const ns = 'http://www.w3.org/2000/svg';
+function filterRoot(doc) {
   let svg = doc.getElementById('pixelwave-filters');
   if (!svg) {
-    svg = doc.createElementNS(ns, 'svg');
+    svg = doc.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('id', 'pixelwave-filters');
     svg.setAttribute('width', '0');
     svg.setAttribute('height', '0');
@@ -110,43 +120,101 @@ export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
     svg.style.pointerEvents = 'none';
     doc.body.appendChild(svg);
   }
-  const id = `pw-key-${chromaFilters.size + 1}`;
-  const filter = doc.createElementNS(ns, 'filter');
+  return svg;
+}
+
+export function registeredFilter(key, build, doc = globalThis.document) {
+  if (!doc?.createElementNS) return null;
+  const cached = filterRegistry.get(key);
+  if (cached && doc.getElementById?.(cached.id)) {
+    filterRegistry.delete(key);
+    filterRegistry.set(key, cached);
+    return `url(#${cached.id})`;
+  }
+  filterSerial += 1;
+  const id = `pw-fx-${filterSerial}`;
+  const filter = doc.createElementNS(SVG_NS, 'filter');
   filter.setAttribute('id', id);
   filter.setAttribute('color-interpolation-filters', 'sRGB');
-  const matrix = doc.createElementNS(ns, 'feColorMatrix');
-  matrix.setAttribute('type', 'matrix');
-  matrix.setAttribute('in', 'SourceGraphic');
-  matrix.setAttribute('result', 'keyed');
-  matrix.setAttribute('values', values);
-  const composite = doc.createElementNS(ns, 'feComposite');
-  composite.setAttribute('in', 'keyed');
-  composite.setAttribute('in2', 'SourceGraphic');
-  composite.setAttribute('operator', 'in');
-  filter.append(matrix, composite);
-  svg.appendChild(filter);
-  const reference = `url(#${id})`;
-  chromaFilters.set(cacheKey, reference);
-  return reference;
+  build(filter, (name) => doc.createElementNS(SVG_NS, name));
+  filterRoot(doc).appendChild(filter);
+  filterRegistry.set(key, { id, element: filter });
+  while (filterRegistry.size > FILTER_LIMIT) {
+    const [oldestKey, oldest] = filterRegistry.entries().next().value;
+    oldest.element.remove?.();
+    filterRegistry.delete(oldestKey);
+  }
+  return `url(#${id})`;
+}
+
+export function resetFilterRegistry() {
+  filterRegistry.clear();
+}
+
+export function ensureChromaKeyFilter(effects, doc = globalThis.document) {
+  if (!effects || effects.keyMode === 'off' || !effects.keyMode) return null;
+  const values = chromaKeyMatrix(effects).join(' ');
+  return registeredFilter(`key:${effects.keyMode}:${values}`, (filter, create) => {
+    const matrix = create('feColorMatrix');
+    matrix.setAttribute('type', 'matrix');
+    matrix.setAttribute('in', 'SourceGraphic');
+    matrix.setAttribute('result', 'keyed');
+    matrix.setAttribute('values', values);
+    const composite = create('feComposite');
+    composite.setAttribute('in', 'keyed');
+    composite.setAttribute('in2', 'SourceGraphic');
+    composite.setAttribute('operator', 'in');
+    filter.append(matrix, composite);
+  }, doc);
+}
+
+// Exposure, white balance, the wheels, tone, contrast and the curves as one lookup table per
+// channel (see color.js). 256 entries means one exact output level for every 8-bit input level.
+export function ensureGradeFilter(effects, doc = globalThis.document) {
+  const channels = gradeChannels(effects);
+  if (!channels) return null;
+  return registeredFilter(`grade:${gradeKey(channels)}`, (filter, create) => {
+    const transfer = create('feComponentTransfer');
+    ['R', 'G', 'B'].forEach((channel, index) => {
+      const lookup = create(`feFunc${channel}`);
+      lookup.setAttribute('type', 'table');
+      lookup.setAttribute('tableValues', channels[index].join(' '));
+      transfer.appendChild(lookup);
+    });
+    filter.append(transfer);
+  }, doc);
+}
+
+// Sharpen, glow, grain, aberration and glitch as one filter (see effects.js). `unit` is canvas
+// pixels per 720p pixel, so the look holds at any preview or export size.
+export function ensureStylizeFilter(effects, { unit = 1, time = 0 } = {}, doc = globalThis.document) {
+  const amounts = stylizeAmounts(effects);
+  if (!hasStylizeFilter(amounts)) return null;
+  const seeds = stylizeSeeds(time);
+  return registeredFilter(
+    stylizeKey(amounts, unit, seeds),
+    (filter, create) => buildStylizeFilter(filter, create, amounts, { unit, seeds }),
+    doc,
+  );
 }
 
 // ---------- filters ----------
 
-export function mediaFilter(effects = {}, { blurPixels = 0, keyFilter = null } = {}) {
+// Chromium's canvas only honors an SVG url() filter that comes before the CSS filter functions;
+// one placed after them renders black. So the key, the grade and the stylize filter lead, then
+// saturation, which needs all three channels and cannot live in the per-channel grade tables.
+export function mediaFilter(effects = {}, { blurPixels = 0, keyFilter = null, gradeFilter = null, stylizeFilter = null } = {}) {
   const grade = computedColorAdjustments(effects);
-  const hue = (grade.temperature < 0 ? 185 : 0) + grade.tint * 0.25 + (Number(effects.hue) || 0);
   const parts = [];
   if (keyFilter) parts.push(keyFilter);
-  parts.push(
-    `brightness(${100 + grade.exposure}%)`,
-    `contrast(${grade.contrast}%)`,
-    `saturate(${grade.saturation}%)`,
-    `sepia(${Math.round(Math.abs(grade.temperature) * 0.2)}%)`,
-    `hue-rotate(${Math.round(hue * 100) / 100}deg)`,
-  );
+  if (gradeFilter) parts.push(gradeFilter);
+  if (stylizeFilter) parts.push(stylizeFilter);
+  if (grade.saturation !== 100) parts.push(`saturate(${grade.saturation}%)`);
+  const hue = Number(effects.hue) || 0;
+  if (hue) parts.push(`hue-rotate(${Math.round(hue * 100) / 100}deg)`);
   if (effects.invert) parts.push(`invert(${clamp(Number(effects.invert) || 0, 0, 100)}%)`);
   if (blurPixels > 0.01) parts.push(`blur(${Math.round(blurPixels * 100) / 100}px)`);
-  return parts.join(' ');
+  return parts.length ? parts.join(' ') : 'none';
 }
 
 // ---------- geometry ----------
@@ -225,6 +293,26 @@ function sourceSize(source) {
 
 // ---------- drawing ----------
 
+let pixelateScratch = null;
+
+// The picture averaged down to one pixel per block, on a reusable canvas. Null where there is no
+// DOM to make a canvas in.
+function coarseSource(doc, source, sourceRect, { columns, rows }) {
+  if (!doc?.createElement) return null;
+  if (!pixelateScratch || pixelateScratch.ownerDocument !== doc) pixelateScratch = doc.createElement('canvas');
+  if (pixelateScratch.width !== columns || pixelateScratch.height !== rows) {
+    pixelateScratch.width = columns;
+    pixelateScratch.height = rows;
+  }
+  const scratch = pixelateScratch.getContext('2d');
+  if (!scratch) return null;
+  scratch.imageSmoothingEnabled = true;
+  scratch.imageSmoothingQuality = 'high';
+  scratch.clearRect(0, 0, columns, rows);
+  scratch.drawImage(source, ...sourceRect, 0, 0, columns, rows);
+  return pixelateScratch;
+}
+
 function drawMedia(context, source, clip, effects, alpha, mods, env) {
   const size = sourceSize(source);
   if (!size.width || !size.height) return null;
@@ -241,7 +329,9 @@ function drawMedia(context, source, clip, effects, alpha, mods, env) {
   const { rect, crop } = geometry;
   const radius = (clamp(Number(effects.radius) || 0, 0, 100) / 100) * (Math.min(rect.width, rect.height) / 2);
   const keyFilter = ensureChromaKeyFilter(effects, env.document);
+  const gradeFilter = ensureGradeFilter(effects, env.document);
   const deviceScale = pixelScale * scale;
+  const stylizeFilter = ensureStylizeFilter(effects, { unit: refScale * deviceScale, time: env.time }, env.document);
 
   context.save();
   if (mods.clipRect) {
@@ -270,18 +360,22 @@ function drawMedia(context, source, clip, effects, alpha, mods, env) {
     context.clip();
   }
   const blurPixels = ((Number(effects.blur) || 0) * refScale + (mods.blur || 0)) * deviceScale;
-  context.filter = mediaFilter(effects, { blurPixels, keyFilter });
-  context.drawImage(
-    source,
+  context.filter = mediaFilter(effects, { blurPixels, keyFilter, gradeFilter, stylizeFilter });
+  const sourceRect = [
     crop.left * size.width,
     crop.top * size.height,
     size.width * (1 - crop.left - crop.right),
     size.height * (1 - crop.top - crop.bottom),
-    rect.x,
-    rect.y,
-    rect.width,
-    rect.height,
-  );
+  ];
+  const cells = pixelateCells(Number(effects.pixelate) || 0, rect.width, rect.height, refScale);
+  const coarse = cells && coarseSource(env.document, source, sourceRect, cells);
+  if (coarse) {
+    // Blocks are the nearest-neighbor enlargement of a small average of the picture.
+    context.imageSmoothingEnabled = false;
+    context.drawImage(coarse, 0, 0, cells.columns, cells.rows, rect.x, rect.y, rect.width, rect.height);
+  } else {
+    context.drawImage(source, ...sourceRect, rect.x, rect.y, rect.width, rect.height);
+  }
   context.restore();
 
   if (effects.vignette > 0) {
@@ -543,6 +637,7 @@ export function drawFrame(context, {
     height,
     pixelScale,
     refScale: textReferenceScale(width, height),
+    time,
     getSource,
     skipText,
     document: doc,

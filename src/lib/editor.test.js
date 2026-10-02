@@ -309,20 +309,20 @@ describe('editor timeline model', () => {
     expect(duplicate.effects.primaryWheels.lift.x).toBe(0.25);
   });
 
-  it('maps lift wheel tint and luma into shared grade adjustments', () => {
+  it('clamps the basic color sliders and leaves the wheels to the per-channel grade', () => {
     const effects = {
       ...defaultEffects(),
-      primaryWheels: {
-        ...defaultPrimaryWheels(),
-        lift: { x: 0.5, y: -0.2, luma: 0.4 },
-      },
+      exposure: 90,
+      contrast: 300,
+      temperature: -140,
+      primaryWheels: { ...defaultPrimaryWheels(), lift: { x: 0.5, y: -0.2, luma: 0.4 } },
     };
-    expect(computedColorAdjustments(effects)).toMatchObject({
-      exposure: 4,
-      contrast: 96,
+    expect(computedColorAdjustments(effects)).toEqual({
+      exposure: 70,
+      contrast: 220,
       saturation: 100,
-      temperature: 10,
-      tint: -4,
+      temperature: -100,
+      tint: 0,
     });
   });
 

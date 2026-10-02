@@ -1,13 +1,15 @@
 import { ArrowCounterClockwise } from '@phosphor-icons/react';
+import { gradeColor } from '../lib/color.js';
 import {
+  activeColorPreset,
   applyColorPreset,
-  COLOR_PRESETS,
-  computedColorAdjustments,
   defaultEffects,
   defaultPrimaryWheels,
   isLiveWheelDrag,
   resetColorEffects,
 } from '../lib/editor.js';
+import CurveEditor from './CurveEditor.jsx';
+import Scopes from './Scopes.jsx';
 import { PropertyRow, Section } from './ui.jsx';
 
 const effectDefaults = defaultEffects();
@@ -20,6 +22,12 @@ const presetOptions = [
   ['punch', 'Punch'],
   ['fade', 'Faded'],
   ['mono', 'Black and white'],
+  ['cinema', 'Teal and orange'],
+  ['film', 'Film'],
+  ['bleach', 'Bleach bypass'],
+  ['moody', 'Moody'],
+  ['golden', 'Golden hour'],
+  ['matte', 'Matte'],
 ];
 
 const basicControls = [
@@ -29,6 +37,26 @@ const basicControls = [
   ['Temperature', 'temperature', -100, 100, 1, ''],
   ['Tint', 'tint', -100, 100, 1, ''],
 ];
+
+const toneControls = [
+  ['Highlights', 'highlights', -100, 100, 1, ''],
+  ['Shadows', 'shadows', -100, 100, 1, ''],
+  ['Whites', 'whites', -100, 100, 1, ''],
+  ['Blacks', 'blacks', -100, 100, 1, ''],
+];
+
+// A look's swatch is four reference colors (sky, foliage, skin, a bright neutral) run through
+// the real grade, so each swatch shows what the look does instead of a painted guess.
+const swatchColors = [[0.36, 0.55, 0.82], [0.28, 0.5, 0.26], [0.86, 0.62, 0.5], [0.9, 0.9, 0.88]];
+
+function swatchBackground(look) {
+  const effects = applyColorPreset(defaultEffects(), look);
+  const stops = swatchColors.map((rgb) => `rgb(${gradeColor(rgb, effects).map((value) => Math.round(value * 255)).join(',')})`);
+  const step = 100 / stops.length;
+  return `linear-gradient(90deg, ${stops.map((color, index) => `${color} ${index * step}% ${(index + 1) * step}%`).join(', ')})`;
+}
+
+const swatches = Object.fromEntries(presetOptions.map(([key]) => [key, swatchBackground(key)]));
 
 function roundAxis(value) {
   return Math.round(Math.max(-1, Math.min(1, value)) * 100) / 100;
@@ -78,7 +106,7 @@ function ColorWheel({ label, value, onChange, onBeginEdit }) {
         }}
         onPointerUp={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
       >
-        <span className="wheel__puck" style={{ transform: `translate(${value.x * 42}%, ${value.y * -42}%)` }} />
+        <span className="wheel__puck" style={{ left: `${50 + value.x * 42}%`, top: `${50 - value.y * 42}%` }} />
       </div>
       <span className="wheel__label">{label}</span>
       <input
@@ -97,23 +125,31 @@ function ColorWheel({ label, value, onChange, onBeginEdit }) {
   );
 }
 
-function activeColorPreset(effects = {}) {
-  const wheels = { ...wheelDefaults, ...(effects.primaryWheels || {}) };
-  const wheelsAreNeutral = Object.values(wheels).every((wheel) => !wheel.x && !wheel.y && !wheel.luma);
-  if (!wheelsAreNeutral) return '';
-  return presetOptions.find(([key]) => Object.entries(COLOR_PRESETS[key]).every(([control, value]) => (
-    (effects[control] ?? effectDefaults[control]) === value
-  )))?.[0] || '';
-}
-
 export default function ColorWorkspace({ clip, onUpdate, onLiveUpdate = onUpdate, onBeginEdit = () => {} }) {
   const effects = { ...effectDefaults, ...(clip.effects || {}) };
   const wheels = { ...wheelDefaults, ...(effects.primaryWheels || {}) };
-  const grade = computedColorAdjustments(effects);
   const activePreset = activeColorPreset(effects);
+  const slider = ([label, key, min, max, step, unit]) => (
+    <PropertyRow
+      key={key}
+      label={label}
+      value={effects[key] ?? effectDefaults[key]}
+      min={min}
+      max={max}
+      step={step}
+      unit={unit}
+      defaultValue={effectDefaults[key]}
+      onBegin={onBeginEdit}
+      onChange={(value) => onLiveUpdate({ effects: { ...effects, [key]: value } })}
+    />
+  );
 
   return (
     <div className="color-workspace">
+      <Section id="color-scopes" title="Scopes">
+        <Scopes />
+      </Section>
+
       <Section
         id="color-looks"
         title="Looks"
@@ -127,7 +163,7 @@ export default function ColorWorkspace({ clip, onUpdate, onLiveUpdate = onUpdate
               className={activePreset === key ? 'is-active' : ''}
               onClick={() => onUpdate({ effects: applyColorPreset(effects, key) })}
             >
-              <span className={`look-swatch look-swatch--${key}`} aria-hidden="true" />
+              <span className="look-swatch" style={{ background: swatches[key] }} aria-hidden="true" />
               <span>{label}</span>
             </button>
           ))}
@@ -150,26 +186,19 @@ export default function ColorWorkspace({ clip, onUpdate, onLiveUpdate = onUpdate
       </Section>
 
       <Section id="color-basic" title="Adjust">
-        {basicControls.map(([label, key, min, max, step, unit]) => (
-          <PropertyRow
-            key={key}
-            label={label}
-            value={effects[key] ?? effectDefaults[key]}
-            min={min}
-            max={max}
-            step={step}
-            unit={unit}
-            defaultValue={effectDefaults[key]}
-            onBegin={onBeginEdit}
-            onChange={(value) => onLiveUpdate({ effects: { ...effects, [key]: value } })}
-          />
-        ))}
-        <dl className="grade-readout" aria-label="Combined grade">
-          <div><dt>Exposure</dt><dd>{grade.exposure > 0 ? '+' : ''}{grade.exposure}</dd></div>
-          <div><dt>Contrast</dt><dd>{grade.contrast}</dd></div>
-          <div><dt>Saturation</dt><dd>{grade.saturation}</dd></div>
-          <div><dt>Temp</dt><dd>{grade.temperature > 0 ? '+' : ''}{grade.temperature}</dd></div>
-        </dl>
+        {basicControls.map(slider)}
+      </Section>
+
+      <Section id="color-tone" title="Tone">
+        {toneControls.map(slider)}
+      </Section>
+
+      <Section id="color-curves" title="Curves">
+        <CurveEditor
+          curves={effects.curves}
+          onBeginEdit={onBeginEdit}
+          onChange={(curves) => onLiveUpdate({ effects: { ...effects, curves } })}
+        />
       </Section>
     </div>
   );
